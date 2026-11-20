@@ -162,7 +162,7 @@ def create_app(
         if thread is not None:
             thread.join(timeout=2)
 
-    app = FastAPI(title="Host Firewall", version="0.2.1", lifespan=lifespan)
+    app = FastAPI(title="Host Firewall", version="0.2.2", lifespan=lifespan)
     app.state.settings = settings
     app.state.pending = pending
     app.state.ufw = ufw
@@ -261,7 +261,7 @@ def create_app(
 
     @app.get("/api/health")
     def health() -> dict:
-        return {"ok": True, "label": settings.hostname_label, "version": "0.2.1"}
+        return {"ok": True, "label": settings.hostname_label, "version": "0.2.2"}
 
     @app.post("/api/login")
     def api_login(response: Response, password: str = Form()) -> dict:

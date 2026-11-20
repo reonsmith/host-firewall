@@ -98,15 +98,19 @@
       {% else %}
       <span class="drag-handle" aria-hidden="true">·</span>
       {% endif %}
-      <span class="rule-num">#{{ r.number }}</span>
-      <div class="rule-to"><code>{{ r.to }}</code></div>
-      <div class="rule-action">
-        <span class="badge action-{{ r.action|lower }}">{{ r.action }}</span>
-        <span class="muted tiny">{{ r.direction }}</span>
+      <div class="rule-body">
+        <div class="rule-primary">
+          <span class="rule-num">#{{ r.number }}</span>
+          <span class="rule-to"><code>{{ r.to }}</code></span>
+          <span class="badge action-{{ r.action|lower }}">{{ r.action }}</span>
+          <span class="muted tiny">{{ r.direction }}</span>
+          <span class="rule-from">{{ r.from_ }}</span>
+          <span class="badge family-{{ r.family }}">{{ r.family }}</span>
+        </div>
+        {% if r.comment %}
+        <div class="rule-comment">{{ r.comment }}</div>
+        {% endif %}
       </div>
-      <div class="rule-from">{{ r.from_ }}</div>
-      <div class="rule-family"><span class="badge family-{{ r.family }}">{{ r.family }}</span></div>
-      <div class="rule-comment" title="{{ r.comment }}">{{ r.comment if r.comment else "—" }}</div>
       <div class="rule-actions">
         {% if not pending %}
         {% if r.number > 1 %}
@@ -161,8 +165,10 @@
     <label>Comment
       <input name="comment" value="{{ edit_rule.comment }}" placeholder="SSH management" />
     </label>
-    <button type="submit">Save (starts {{ confirm_seconds }}s confirm)</button>
-    <a class="ghost-link" href="/">Cancel</a>
+    <div class="form-actions">
+      <button type="submit">Save (starts {{ confirm_seconds }}s confirm)</button>
+      <a class="ghost-link" href="/">Cancel</a>
+    </div>
   </form>
 </section>
 {% else %}
@@ -197,7 +203,9 @@
     <label>Insert at #
       <input name="insert_at" type="number" min="1" placeholder="end" />
     </label>
-    <button type="submit">Apply (starts {{ confirm_seconds }}s confirm)</button>
+    <div class="form-actions">
+      <button type="submit">Apply (starts {{ confirm_seconds }}s confirm)</button>
+    </div>
   </form>
   {% if apps %}
   <p class="muted tiny">App profiles: {{ apps|join(", ") }}</p>
