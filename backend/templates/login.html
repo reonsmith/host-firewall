@@ -14,6 +14,9 @@
       </label>
       <button type="submit">Sign in</button>
     </form>
+    {% if demo %}
+    <p class="demo-note">Demo mode. The password is <code>host-firewall-demo</code>.</p>
+    {% endif %}
     <p class="muted tiny login-foot">Every change opens a confirm window. If you lose access, it rolls itself back.</p>
   </section>
 </div>

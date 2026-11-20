@@ -44,6 +44,9 @@
       routed <strong class="pol-{{ status.default_routed }}">{{ status.default_routed }}</strong>.
       Logging is <strong>{{ status.logging }}</strong>.
     </p>
+    {% if demo %}
+    <p class="demo-note">Demo mode. The rules, ports and traffic are sample data, and changes are simulated without touching this machine.</p>
+    {% endif %}
   </div>
   <span class="state {{ 'on' if status.active else 'off' }}">{{ "Active" if status.active else "Inactive" }}</span>
 </section>
@@ -75,12 +78,12 @@
     </span>
   </a>
   {% endif %}
-  <a class="kpi {{ 'is-alert' if uncovered else '' }}" href="#listening">
+  <a class="kpi {{ 'is-alert' if (uncovered or docker_ports) else '' }}" href="#listening">
     <span class="kpi-label">Open ports with no rule</span>
     <span class="kpi-row">
       <span class="kpi-value">{{ uncovered|length }}</span>
-      <span class="kpi-chip" title="{% for p in uncovered %}{{ p.port }}/{{ p.proto }} {% endfor %}">
-        {% if uncovered %}{% for p in uncovered[:2] %}{{ p.port }}/{{ p.proto }}{{ ", " if not loop.last }}{% endfor %}{% if uncovered|length > 2 %} +{{ uncovered|length - 2 }}{% endif %}{% else %}all covered{% endif %}
+      <span class="kpi-chip" title="{% for p in uncovered %}{{ p.port }}/{{ p.proto }} {% endfor %}{% if docker_ports %}Docker bypasses UFW: {% for p in docker_ports %}{{ p.port }}/{{ p.proto }} {% endfor %}{% endif %}">
+        {% if uncovered %}{% for p in uncovered[:2] %}{{ p.port }}/{{ p.proto }}{{ ", " if not loop.last }}{% endfor %}{% if uncovered|length > 2 %} +{{ uncovered|length - 2 }}{% endif %}{% if docker_ports %}, {{ docker_ports|length }} Docker{% endif %}{% elif docker_ports %}{{ docker_ports|length }} via Docker{% else %}all covered{% endif %}
       </span>
     </span>
   </a>
@@ -406,7 +409,7 @@
 <section class="panel" id="listening" data-live="listening">
   <div class="panel-head">
     <h2>Listening ports</h2>
-    <span class="count">{% if uncovered %}{{ uncovered|length }} with no rule{% else %}from ss{% endif %}</span>
+    <span class="count">{% if uncovered or docker_ports %}{% if uncovered %}{{ uncovered|length }} with no rule{% endif %}{% if uncovered and docker_ports %}, {% endif %}{% if docker_ports %}{{ docker_ports|length }} via Docker{% endif %}{% else %}from ss{% endif %}</span>
   </div>
   {% if ports %}
   <div class="table-wrap">
@@ -424,14 +427,15 @@
     <tbody>
       {% for p in ports %}
       {% set is_unc = (p.proto ~ "/" ~ p.port) in uncovered_keys %}
-      <tr {% if is_unc %}class="is-uncovered"{% endif %}>
-        <td><code>{{ p.port }}</code>{% if is_unc %} <span class="badge action-limit">no rule</span>{% endif %}</td>
+      {% set is_docker = (p.proto ~ "/" ~ p.port) in docker_keys %}
+      <tr {% if is_unc or is_docker %}class="is-uncovered"{% endif %}>
+        <td class="nowrap"><code>{{ p.port }}</code>{% if is_unc %} <span class="badge action-limit">no rule</span>{% endif %}{% if is_docker %} <span class="badge action-limit" title="Published by Docker. UFW rules don't apply to this port.">docker</span>{% endif %}</td>
         <td>{{ p.proto }}</td>
         <td><code>{{ p.local }}</code></td>
         <td><span class="badge family-{{ p.family }}">{{ p.family }}</span></td>
         <td>{{ p.process or "—" }}</td>
         <td class="nowrap">
-          {% if not pending and p.port.isdigit() %}
+          {% if not pending and p.port.isdigit() and not is_docker %}
           <a class="ghost-link accent"
              href="/?action=allow&amp;port_or_app={{ (p.port ~ '/' ~ p.proto)|urlencode }}&amp;comment={{ ((p.process or 'listen') ~ ' ' ~ p.port)|urlencode }}#add">
             Allow
@@ -443,6 +447,13 @@
     </tbody>
   </table>
   </div>
+  {% if docker_ports %}
+  <p class="note">
+    <strong>Ports marked docker bypass UFW.</strong> Docker writes its own iptables rules ahead of UFW's,
+    so allow and deny rules here don't affect them. Publish them on <code>127.0.0.1</code> behind your proxy,
+    or filter them in the <code>DOCKER-USER</code> chain.
+  </p>
+  {% endif %}
   {% else %}
   <div class="empty">
     <strong>No listening sockets found</strong>

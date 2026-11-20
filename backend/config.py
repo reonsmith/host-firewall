@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import secrets
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -18,30 +19,56 @@ class Settings:
     hostname_label: str
     log_paths: tuple[Path, ...]
     log_limit: int
+    demo: bool = False
+    # None = automatic (Secure when the request arrived over HTTPS, incl. via proxy)
+    cookie_secure: bool | None = None
+
+
+def _truthy(value: str) -> bool:
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def load_settings() -> Settings:
+    demo = _truthy(os.environ.get("HOST_FIREWALL_DEMO", ""))
+    data_dir = Path(os.environ.get("HOST_FIREWALL_DATA_DIR", "/app/data"))
     password = os.environ.get("HOST_FIREWALL_PASSWORD", "")
     secret = os.environ.get("HOST_FIREWALL_SECRET_KEY", "")
+    if demo:
+        from backend.demo import DEMO_PASSWORD
+
+        password = password or DEMO_PASSWORD
+        secret = secret or secrets.token_urlsafe(32)
     if len(password) < 12:
         raise RuntimeError("HOST_FIREWALL_PASSWORD must be set (min 12 characters)")
     if len(secret) < 32:
         raise RuntimeError("HOST_FIREWALL_SECRET_KEY must be set (min 32 characters)")
-    raw_logs = os.environ.get(
-        "HOST_FIREWALL_LOG_PATHS",
-        "/var/log/ufw.log:/var/log/kern.log:/var/log/syslog",
-    )
-    log_paths = tuple(Path(p) for p in raw_logs.split(":") if p.strip())
+
+    if demo:
+        ufw_dir = data_dir / "demo-ufw"
+        log_paths: tuple[Path, ...] = (data_dir / "demo-ufw.log",)
+    else:
+        ufw_dir = Path(os.environ.get("HOST_FIREWALL_UFW_DIR", "/etc/ufw"))
+        raw_logs = os.environ.get(
+            "HOST_FIREWALL_LOG_PATHS",
+            "/var/log/ufw.log:/var/log/kern.log:/var/log/syslog",
+        )
+        log_paths = tuple(Path(p) for p in raw_logs.split(":") if p.strip())
+
+    raw_secure = os.environ.get("HOST_FIREWALL_COOKIE_SECURE", "auto").strip().lower()
+    cookie_secure = None if raw_secure in {"", "auto"} else _truthy(raw_secure)
+
     return Settings(
         password=password,
         secret_key=secret,
-        data_dir=Path(os.environ.get("HOST_FIREWALL_DATA_DIR", "/app/data")),
-        ufw_dir=Path(os.environ.get("HOST_FIREWALL_UFW_DIR", "/etc/ufw")),
+        data_dir=data_dir,
+        ufw_dir=ufw_dir,
         ufw_bin=os.environ.get("HOST_FIREWALL_UFW_BIN", "ufw"),
         confirm_seconds=int(os.environ.get("HOST_FIREWALL_CONFIRM_SECONDS", "60")),
         bind_host=os.environ.get("HOST_FIREWALL_BIND", "0.0.0.0"),
         bind_port=int(os.environ.get("HOST_FIREWALL_PORT", "8080")),
-        hostname_label=os.environ.get("HOST_FIREWALL_LABEL", "host"),
+        hostname_label=os.environ.get("HOST_FIREWALL_LABEL", "demo-host" if demo else "host"),
         log_paths=log_paths,
         log_limit=int(os.environ.get("HOST_FIREWALL_LOG_LIMIT", "80")),
+        demo=demo,
+        cookie_secure=cookie_secure,
     )

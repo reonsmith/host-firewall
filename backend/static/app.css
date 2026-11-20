@@ -543,6 +543,27 @@ td.when { font-family: var(--mono); font-size: 0.78rem; color: var(--muted); whi
 td.nowrap { white-space: nowrap; }
 tr.is-uncovered td:first-child { box-shadow: inset 3px 0 0 var(--warn); }
 
+.note {
+  margin: 0.9rem 0 0;
+  padding: 0.75rem 0.9rem;
+  border-radius: var(--r-row);
+  background: var(--warn-dim);
+  color: var(--text);
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+.note strong { color: var(--warn); font-weight: 600; }
+.demo-note {
+  margin: 0.75rem 0 0;
+  padding: 0.45rem 0.75rem;
+  border-radius: var(--r-ctl);
+  border: 1px dashed rgba(212, 243, 106, 0.35);
+  color: var(--lime);
+  font-size: 0.82rem;
+  max-width: 62ch;
+}
+.host-chip.is-demo { color: var(--lime-ink); background: var(--lime); }
+
 /* ---------- Empty states ---------- */
 .empty {
   display: grid;
