@@ -1,4 +1,4 @@
-FROM python:3.12-slim
+FROM python:3.15-slim
 
 LABEL org.opencontainers.image.title="Host Firewall" \
       org.opencontainers.image.description="Web panel for host UFW with labelled rules and confirm-or-rollback" \
