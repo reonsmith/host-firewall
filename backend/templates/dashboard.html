@@ -1,0 +1,181 @@
+{% extends "base.html" %}
+{% block title %}{{ label }} — Host Firewall{% endblock %}
+{% block header_actions %}
+<form method="post" action="/actions/logout"><button type="submit" class="ghost">Sign out</button></form>
+{% endblock %}
+{% block content %}
+
+{% if pending %}
+<section class="banner warn" id="pending-banner"
+         data-expires="{{ pending.expires_at }}">
+  <div>
+    <strong>Pending change</strong> — confirm within
+    <span id="countdown">{{ pending.seconds_remaining()|round(0)|int }}</span>s
+    or it will roll back.
+    <div class="muted">{{ pending.description }}</div>
+    {% if pending.warn_blocks_client %}
+    <div class="error">Warning: this change may block your current client IP ({{ pending.client_ip }}).</div>
+    {% endif %}
+  </div>
+  <div class="row">
+    <form method="post" action="/actions/confirm"><button type="submit">Confirm</button></form>
+    <form method="post" action="/actions/rollback"><button type="submit" class="danger">Rollback now</button></form>
+  </div>
+</section>
+<script>
+(function () {
+  const el = document.getElementById("pending-banner");
+  const cd = document.getElementById("countdown");
+  if (!el || !cd) return;
+  const expires = parseFloat(el.dataset.expires) * 1000;
+  function tick() {
+    const left = Math.max(0, Math.ceil((expires - Date.now()) / 1000));
+    cd.textContent = String(left);
+    if (left <= 0) location.reload();
+    else setTimeout(tick, 1000);
+  }
+  tick();
+})();
+</script>
+{% endif %}
+
+<section class="card">
+  <h1>Rules</h1>
+  <table>
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>To</th>
+        <th>Action</th>
+        <th>From</th>
+        <th>Comment</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in rules %}
+      <tr>
+        <td>{{ r.number }}</td>
+        <td><code>{{ r.to }}</code></td>
+        <td>{{ r.action }} {{ r.direction }}</td>
+        <td>{{ r.from_ }}</td>
+        <td>{{ r.comment if r.comment else "—" }}</td>
+        <td class="row">
+          {% if not pending %}
+          <a class="ghost-link" href="/edit/{{ r.number }}">Edit</a>
+          <form method="post" action="/actions/delete/{{ r.number }}"
+                onsubmit="return confirm('Delete rule {{ r.number }}? Starts confirm window.');">
+            <button type="submit" class="ghost danger">Delete</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6" class="muted">No rules parsed from UFW.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+{% if edit_rule %}
+<section class="card">
+  <h2>Edit rule #{{ edit_rule.number }}</h2>
+  <form method="post" action="/actions/edit/{{ edit_rule.number }}" class="grid">
+    <label>Action
+      <select name="action">
+        <option value="allow" {% if edit_rule.action == 'ALLOW' %}selected{% endif %}>allow</option>
+        <option value="deny" {% if edit_rule.action == 'DENY' %}selected{% endif %}>deny</option>
+      </select>
+    </label>
+    <label>Direction
+      <select name="direction">
+        <option value="in" {% if edit_rule.direction == 'IN' %}selected{% endif %}>in</option>
+        <option value="out" {% if edit_rule.direction == 'OUT' %}selected{% endif %}>out</option>
+      </select>
+    </label>
+    <label>Port / app
+      <input name="port_or_app" value="{{ edit_rule.to }}" required />
+    </label>
+    <label>From
+      <input name="from_address" value="{{ edit_rule.from_ }}" />
+    </label>
+    <label>Comment
+      <input name="comment" value="{{ edit_rule.comment }}" placeholder="SSH management" />
+    </label>
+    <button type="submit">Save (starts {{ confirm_seconds }}s confirm)</button>
+    <a class="ghost-link" href="/">Cancel</a>
+  </form>
+</section>
+{% else %}
+<section class="card">
+  <h2>Add rule</h2>
+  {% if pending %}
+  <p class="muted">Confirm or roll back the pending change before adding another rule.</p>
+  {% else %}
+  <form method="post" action="/actions/add" class="grid">
+    <label>Action
+      <select name="action">
+        <option value="allow">allow</option>
+        <option value="deny">deny</option>
+      </select>
+    </label>
+    <label>Direction
+      <select name="direction">
+        <option value="in">in</option>
+        <option value="out">out</option>
+      </select>
+    </label>
+    <label>Port / app
+      <input name="port_or_app" placeholder="22/tcp" required />
+    </label>
+    <label>From
+      <input name="from_address" value="Anywhere" />
+    </label>
+    <label>Comment
+      <input name="comment" placeholder="SSH management" />
+    </label>
+    <button type="submit">Apply (starts {{ confirm_seconds }}s confirm)</button>
+  </form>
+  {% endif %}
+</section>
+{% endif %}
+
+<section class="card" id="traffic-logs">
+  <div class="row" style="justify-content: space-between; align-items: baseline;">
+    <h2 style="margin:0">Traffic hits</h2>
+    <a class="ghost-link" href="/#traffic-logs">Refresh</a>
+  </div>
+  <p class="muted">
+    Recent UFW log events (mostly blocks at logging level low).
+    {% if log_sources %}
+    Sources: {{ log_sources|join(", ") }}
+    {% else %}
+    No log files readable yet — ensure UFW logging is on and <code>/var/log</code> is mounted.
+    {% endif %}
+  </p>
+  <table>
+    <thead>
+      <tr>
+        <th>When</th>
+        <th>Action</th>
+        <th>Flow</th>
+        <th>Likely rule</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for h in log_rows %}
+      <tr>
+        <td class="muted">{{ h.timestamp }}</td>
+        <td>{{ h.action }}</td>
+        <td><code>{{ h.summary }}</code></td>
+        <td>{{ h.rule_hint if h.rule_hint else "—" }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="4" class="muted">No recent UFW hits in the log files.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+<meta http-equiv="refresh" content="30">
+
+{% endblock %}

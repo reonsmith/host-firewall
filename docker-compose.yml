@@ -1,0 +1,24 @@
+# Host UFW panel — one stack per Ubuntu host (network_mode: host).
+services:
+  host-firewall:
+    build: .
+    container_name: host-firewall
+    network_mode: host
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    environment:
+      HOST_FIREWALL_PASSWORD: ${HOST_FIREWALL_PASSWORD}
+      HOST_FIREWALL_SECRET_KEY: ${HOST_FIREWALL_SECRET_KEY}
+      HOST_FIREWALL_DATA_DIR: /app/data
+      HOST_FIREWALL_UFW_DIR: /etc/ufw
+      HOST_FIREWALL_BIND: ${HOST_FIREWALL_BIND:-0.0.0.0}
+      HOST_FIREWALL_PORT: ${HOST_FIREWALL_PORT:-8080}
+      HOST_FIREWALL_LABEL: ${HOST_FIREWALL_LABEL:-host}
+      HOST_FIREWALL_CONFIRM_SECONDS: ${HOST_FIREWALL_CONFIRM_SECONDS:-60}
+    volumes:
+      - ./data:/app/data
+      - /etc/ufw:/etc/ufw
+      - /etc/default/ufw:/etc/default/ufw
+      - /var/log:/var/log:ro
