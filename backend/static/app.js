@@ -263,6 +263,9 @@
     });
   }
 
+  // Used by the static GitHub Pages demo to re-attach drag after it rewrites the DOM.
+  window.HostFirewall = { initRuleDrag };
+
   document.addEventListener("DOMContentLoaded", () => {
     initCountdown();
     initRuleDrag();

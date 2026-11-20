@@ -9,7 +9,9 @@ confirm in time (or lose access), the previous rules come back on their own.
 [![Image](https://img.shields.io/badge/ghcr.io-host--firewall-d4f36a?labelColor=171915&logo=docker&logoColor=white)](https://github.com/reonsmith/host-firewall/pkgs/container/host-firewall)
 [![License: MIT](https://img.shields.io/badge/license-MIT-d4f36a?labelColor=171915)](LICENSE)
 
-![Host Firewall dashboard](docs/screenshots/dashboard.png)
+**[Try the live demo](https://reonsmith.github.io/host-firewall/)**: no install, runs in your browser with sample data.
+
+[![Host Firewall dashboard](docs/screenshots/dashboard.png)](https://reonsmith.github.io/host-firewall/)
 
 ## What it does
 
@@ -31,7 +33,12 @@ shared password. Keep it on your LAN or behind a reverse proxy with TLS.
 
 ## Try the demo
 
-Demo mode serves sample rules, ports and traffic. Changes are simulated, and the
+**In your browser:** <https://reonsmith.github.io/host-firewall/>. Drag a rule,
+add one or change a policy, then confirm or roll back. It's a static copy of
+the dashboard with the server simulated in the page, so nothing is saved.
+
+**The real app, on your machine:** demo mode serves the same sample rules,
+ports and traffic from the actual server. Changes are simulated, and the
 container gets no host access or extra capabilities.
 
 ```bash

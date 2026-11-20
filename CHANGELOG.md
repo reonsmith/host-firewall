@@ -6,6 +6,15 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-11-20
+
+### Added
+- **Live demo on GitHub Pages**: <https://reonsmith.github.io/host-firewall/>.
+  A static copy of the dashboard in demo mode, rebuilt on every push to `main`
+  and weekly. Dragging, adding, editing, deleting and policy changes are
+  simulated in the browser, including the confirm-or-rollback countdown.
+- `scripts/build_static_demo.py` builds that page; `.github/workflows/pages.yml` publishes it.
+
 ## [0.4.0] - 2026-11-20
 
 ### Added
@@ -79,7 +88,8 @@ All notable changes to this project are listed here. The format follows
 - First public release: labelled UFW rules, add, edit and delete, recent log
   hits with Block IP, change history, and confirm-or-rollback for every change.
 
-[Unreleased]: https://github.com/reonsmith/host-firewall/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/reonsmith/host-firewall/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/reonsmith/host-firewall/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/reonsmith/host-firewall/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/reonsmith/host-firewall/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/reonsmith/host-firewall/compare/v0.2.2...v0.3.0

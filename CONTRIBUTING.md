@@ -20,6 +20,10 @@ HOST_FIREWALL_DEMO=1 HOST_FIREWALL_DATA_DIR=./data-demo python -m backend
 # open http://127.0.0.1:8080 and sign in with: host-firewall-demo
 ```
 
+The GitHub Pages demo is built from the same templates with
+`python scripts/build_static_demo.py site`; serve `site/` with any static server
+to check it. Browser-side simulation lives in `scripts/static-demo/demo.js`.
+
 ## Ground rules
 
 - **Every mutation goes through confirm-or-rollback.** Snapshot `/etc/ufw`,

@@ -16,3 +16,5 @@ docs
 CHANGELOG.md
 CONTRIBUTING.md
 docker-compose*.yml
+scripts
+site

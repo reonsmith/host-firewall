@@ -42,7 +42,7 @@ from backend.ufw_runner import (
 
 log = logging.getLogger("host-firewall")
 
-APP_VERSION = "0.4.0"
+APP_VERSION = "0.4.1"
 
 BASE_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
