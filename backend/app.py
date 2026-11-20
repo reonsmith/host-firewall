@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 from backend.config import Settings, load_settings
 from backend.export_backup import build_ufw_export_tar, list_snapshots
 from backend.history import ChangeHistory
+from backend.insights import hourly_blocks, relative_time, uncovered_ports
 from backend.listening import list_listening_ports
 from backend.pending import (
     NoPendingError,
@@ -39,6 +40,8 @@ from backend.ufw_runner import (
 )
 
 log = logging.getLogger("host-firewall")
+
+APP_VERSION = "0.3.0"
 
 BASE_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
@@ -162,7 +165,7 @@ def create_app(
         if thread is not None:
             thread.join(timeout=2)
 
-    app = FastAPI(title="Host Firewall", version="0.2.2", lifespan=lifespan)
+    app = FastAPI(title="Host Firewall", version=APP_VERSION, lifespan=lifespan)
     app.state.settings = settings
     app.state.pending = pending
     app.state.ufw = ufw
@@ -226,7 +229,19 @@ def create_app(
         except Exception:
             apps = []
         change = pending.get()
-        hits = read_ufw_hits(list(settings.log_paths), limit=settings.log_limit)
+        all_hits = read_ufw_hits(
+            list(settings.log_paths), limit=max(2000, settings.log_limit)
+        )
+        chart = hourly_blocks(all_hits)
+        hits = []
+        seen_raw: set[str] = set()
+        for h in all_hits:
+            if h.raw in seen_raw:
+                continue
+            seen_raw.add(h.raw)
+            hits.append(h)
+            if len(hits) >= settings.log_limit:
+                break
         log_rows = [
             {
                 "timestamp": h.timestamp,
@@ -240,7 +255,22 @@ def create_app(
             for h in hits
         ]
         ports = list_listening_ports(runner=listening_runner)
+        uncovered = uncovered_ports(ports, rules)
+        recent_history = [e.to_dict() for e in history.recent(40)]
+        last_change = None
+        if recent_history:
+            last = recent_history[0]
+            last_change = {
+                "ago": relative_time(last["ts"]),
+                "outcome": last["outcome"],
+                "description": last["description"],
+            }
         return {
+            "version": APP_VERSION,
+            "chart": chart,
+            "uncovered": uncovered,
+            "uncovered_keys": {f"{p.proto}/{p.port}" for p in uncovered},
+            "last_change": last_change,
             "label": settings.hostname_label,
             "rules": rules,
             "status": status,
@@ -251,7 +281,7 @@ def create_app(
             "edit_rule": edit_rule,
             "apps": apps,
             "ports": ports,
-            "history": [e.to_dict() for e in history.recent(40)],
+            "history": recent_history,
             "snapshots": list_snapshots(settings.data_dir)[:20],
             "logging_levels": LOGGING_LEVELS,
             "default_policies": DEFAULT_POLICIES,
@@ -261,7 +291,7 @@ def create_app(
 
     @app.get("/api/health")
     def health() -> dict:
-        return {"ok": True, "label": settings.hostname_label, "version": "0.2.2"}
+        return {"ok": True, "label": settings.hostname_label, "version": APP_VERSION}
 
     @app.post("/api/login")
     def api_login(response: Response, password: str = Form()) -> dict:

@@ -1,147 +1,262 @@
 {% extends "base.html" %}
 {% block title %}{{ label }} — Host Firewall{% endblock %}
+{% block page %}{{ "edit" if edit_rule else "dashboard" }}{% endblock %}
 {% block header_actions %}
 <div class="header-actions">
+  <span class="live" id="live" aria-live="off" title="The page refreshes its data every 45 seconds while idle">
+    <span class="live-dot" aria-hidden="true"></span>
+    <span id="live-text">Updated now</span>
+  </span>
   <a class="ghost-link" href="/export">Export</a>
-  <a class="ghost-link" href="/">Refresh</a>
   <form method="post" action="/actions/logout"><button type="submit" class="ghost">Sign out</button></form>
 </div>
 {% endblock %}
 {% block content %}
 
 {% if pending %}
-<section class="banner warn" id="pending-banner"
+<section class="banner" id="pending-banner"
          data-expires="{{ pending.expires_at }}"
+         data-total="{{ confirm_seconds }}"
          role="status"
          aria-live="polite">
-  <div>
-    <strong>Pending change</strong> — confirm within
-    <span id="countdown">{{ pending.seconds_remaining()|round(0)|int }}</span>s
-    or it rolls back.
+  <div class="banner-body">
+    <strong>Pending change.</strong> Confirm within
+    <span id="countdown">{{ pending.seconds_remaining()|round(0)|int }}</span>s or it rolls back.
     <div class="muted">{{ pending.description }}</div>
     {% if pending.warn_blocks_client %}
-    <div class="error">Warning: this may block your current client IP ({{ pending.client_ip }}).</div>
+    <div class="error">This may block your current client IP ({{ pending.client_ip }}).</div>
     {% endif %}
+    <div class="countdown-track" aria-hidden="true"><div class="countdown-fill" id="countdown-fill"></div></div>
   </div>
   <div class="row">
     <form method="post" action="/actions/confirm"><button type="submit">Confirm</button></form>
-    <form method="post" action="/actions/rollback"><button type="submit" class="danger">Rollback now</button></form>
+    <form method="post" action="/actions/rollback"><button type="submit" class="danger">Roll back now</button></form>
   </div>
 </section>
 {% endif %}
 
-<section class="status-strip card">
-  <div class="status-main">
-    <span class="badge {% if status.active %}ok{% else %}bad{% endif %}">
-      {{ "Active" if status.active else "Inactive" }}
-    </span>
-    <span class="stat-pill">Logging <strong>{{ status.logging }}</strong></span>
-    <span class="stat-pill">In <strong>{{ status.default_incoming }}</strong></span>
-    <span class="stat-pill">Out <strong>{{ status.default_outgoing }}</strong></span>
-    <span class="stat-pill">Routed <strong>{{ status.default_routed }}</strong></span>
+<section class="hero">
+  <div>
+    <h1 class="hero-host">{{ label }}</h1>
+    <p class="hero-sub">
+      Incoming traffic is <strong class="pol-{{ status.default_incoming }}">{{ status.default_incoming }}</strong> by default,
+      outgoing <strong class="pol-{{ status.default_outgoing }}">{{ status.default_outgoing }}</strong>,
+      routed <strong class="pol-{{ status.default_routed }}">{{ status.default_routed }}</strong>.
+      Logging is <strong>{{ status.logging }}</strong>.
+    </p>
   </div>
-  {% if not pending %}
-  <div class="status-controls">
-    <form method="post" action="/actions/{% if status.active %}disable{% else %}enable{% endif %}"
-          onsubmit="return confirm('{% if status.active %}Disable{% else %}Enable{% endif %} UFW? Starts confirm window.');">
-      <button type="submit" class="{% if status.active %}ghost danger{% else %}ghost{% endif %}">
-        {% if status.active %}Disable UFW{% else %}Enable UFW{% endif %}
-      </button>
-    </form>
-    <form method="post" action="/actions/default" class="inline-form">
-      <label class="sr-only" for="default-direction">Default direction</label>
-      <select id="default-direction" name="direction">
-        <option value="incoming">incoming</option>
-        <option value="outgoing">outgoing</option>
-        <option value="routed">routed</option>
-      </select>
-      <label class="sr-only" for="default-policy">Default policy</label>
-      <select id="default-policy" name="policy">
-        {% for p in default_policies %}
-        <option value="{{ p }}">{{ p }}</option>
-        {% endfor %}
-      </select>
-      <button type="submit" class="ghost">Set default</button>
-    </form>
-    <form method="post" action="/actions/logging" class="inline-form">
-      <label class="sr-only" for="logging-level">Logging level</label>
-      <select id="logging-level" name="level">
-        {% for lvl in logging_levels %}
-        <option value="{{ lvl }}" {% if status.logging == lvl %}selected{% endif %}>{{ lvl }}</option>
-        {% endfor %}
-      </select>
-      <button type="submit" class="ghost">Set logging</button>
-    </form>
-  </div>
-  {% else %}
-  <p class="muted tiny">Confirm or roll back before changing policy.</p>
-  {% endif %}
+  <span class="state {{ 'on' if status.active else 'off' }}">{{ "Active" if status.active else "Inactive" }}</span>
 </section>
 
-<section class="card" id="rules">
-  <div class="section-head">
-    <h1>Rules</h1>
-    <span class="muted">{{ rules|length }} rule{{ "" if rules|length == 1 else "s" }}</span>
+{% set allow_count = rules|selectattr("action", "equalto", "ALLOW")|list|length %}
+{% set limit_count = rules|selectattr("action", "equalto", "LIMIT")|list|length %}
+<section class="kpis" data-live="kpis" aria-label="Summary">
+  <a class="kpi" href="#rules">
+    <span class="kpi-label">Rules</span>
+    <span class="kpi-row">
+      <span class="kpi-value">{{ rules|length }}</span>
+      <span class="kpi-chip">{{ allow_count + limit_count }} allow, {{ rules|length - allow_count - limit_count }} block</span>
+    </span>
+  </a>
+  {% if status.logging == "off" %}
+  <a class="kpi is-quiet" href="#traffic-logs">
+    <span class="kpi-label">Blocked, last 24 h</span>
+    <span class="kpi-row">
+      <span class="kpi-value">—</span>
+      <span class="kpi-chip">logging off</span>
+    </span>
+  </a>
+  {% else %}
+  <a class="kpi" href="#traffic-logs">
+    <span class="kpi-label">Blocked, last 24 h</span>
+    <span class="kpi-row">
+      <span class="kpi-value">{{ "{:,}".format(chart.total) }}</span>
+      <span class="kpi-chip">{% if chart.peak %}peak {{ chart.peak }}/h{% else %}quiet{% endif %}</span>
+    </span>
+  </a>
+  {% endif %}
+  <a class="kpi {{ 'is-alert' if uncovered else '' }}" href="#listening">
+    <span class="kpi-label">Open ports with no rule</span>
+    <span class="kpi-row">
+      <span class="kpi-value">{{ uncovered|length }}</span>
+      <span class="kpi-chip" title="{% for p in uncovered %}{{ p.port }}/{{ p.proto }} {% endfor %}">
+        {% if uncovered %}{% for p in uncovered[:2] %}{{ p.port }}/{{ p.proto }}{{ ", " if not loop.last }}{% endfor %}{% if uncovered|length > 2 %} +{{ uncovered|length - 2 }}{% endif %}{% else %}all covered{% endif %}
+      </span>
+    </span>
+  </a>
+  <a class="kpi is-quiet" href="#history">
+    <span class="kpi-label">Last change</span>
+    <span class="kpi-row">
+      {% if last_change %}
+      <span class="kpi-value is-text">{{ last_change.ago }}</span>
+      <span class="kpi-chip" title="{{ last_change.description }}">{{ last_change.outcome|replace("_", " ") }}</span>
+      {% else %}
+      <span class="kpi-value is-text">None yet</span>
+      <span class="kpi-chip">no history</span>
+      {% endif %}
+    </span>
+  </a>
+</section>
+
+<div class="split">
+  <section class="panel chart-panel" data-live="chart" aria-labelledby="chart-title">
+    <div class="panel-head">
+      <h2 id="chart-title">Blocked traffic</h2>
+      <span class="count">per hour, last 24 h</span>
+    </div>
+    <div class="chart-total">
+      <strong>{{ "{:,}".format(chart.total) }}</strong>
+      <span class="muted tiny">blocks in the log tail</span>
+    </div>
+    <div class="bars" role="img" aria-label="Blocked packets per hour over the last 24 hours, {{ chart.total }} in total, peak {{ chart.peak }} in one hour">
+      {% for b in chart.bars %}
+      <div class="bar{% if b.count == 0 %} is-zero{% endif %}{% if b.is_peak %} is-peak{% endif %}" title="{{ b.title }}: {{ b.count }}">
+        <div class="bar-fill" style="height: {{ b.pct if b.count else 0 }}%">
+          <span class="bar-tip">{{ b.count }}</span>
+        </div>
+      </div>
+      {% endfor %}
+      {% if chart.total == 0 %}
+      <div class="chart-empty">
+        {% if status.logging == "off" %}
+        UFW logging is off, so there is nothing to chart. Turn it on in Policy.
+        {% elif chart.unparsed %}
+        Found {{ chart.unparsed }} blocks, but their timestamps aren't ISO-8601, so they can't be placed on the timeline.
+        {% elif not log_sources %}
+        No readable UFW log files. Mount /var/log into the container.
+        {% else %}
+        No blocks in the last 24 hours.
+        {% endif %}
+      </div>
+      {% endif %}
+    </div>
+    <div class="bar-axis" aria-hidden="true">
+      {% for b in chart.bars %}<span>{{ b.label }}</span>{% endfor %}
+    </div>
+  </section>
+
+  <section class="panel" aria-labelledby="policy-title">
+    <div class="panel-head">
+      <h2 id="policy-title">Policy</h2>
+    </div>
+    <dl class="policy-list">
+      <div class="policy-item"><dt>Incoming</dt><dd class="pol-{{ status.default_incoming }}">{{ status.default_incoming }}</dd></div>
+      <div class="policy-item"><dt>Outgoing</dt><dd class="pol-{{ status.default_outgoing }}">{{ status.default_outgoing }}</dd></div>
+      <div class="policy-item"><dt>Routed</dt><dd class="pol-{{ status.default_routed }}">{{ status.default_routed }}</dd></div>
+      <div class="policy-item"><dt>Logging</dt><dd>{{ status.logging }}</dd></div>
+    </dl>
+    {% if not pending %}
+    <div class="policy-controls">
+      <form method="post" action="/actions/default" class="inline-form">
+        <label class="sr-only" for="default-direction">Direction</label>
+        <select id="default-direction" name="direction">
+          <option value="incoming">incoming</option>
+          <option value="outgoing">outgoing</option>
+          <option value="routed">routed</option>
+        </select>
+        <label class="sr-only" for="default-policy">Policy</label>
+        <select id="default-policy" name="policy">
+          {% for p in default_policies %}
+          <option value="{{ p }}">{{ p }}</option>
+          {% endfor %}
+        </select>
+        <button type="submit" class="ghost">Set default</button>
+      </form>
+      <form method="post" action="/actions/logging" class="inline-form two">
+        <label class="sr-only" for="logging-level">Logging level</label>
+        <select id="logging-level" name="level">
+          {% for lvl in logging_levels %}
+          <option value="{{ lvl }}" {% if status.logging == lvl %}selected{% endif %}>logging {{ lvl }}</option>
+          {% endfor %}
+        </select>
+        <button type="submit" class="ghost">Set logging</button>
+      </form>
+      <form method="post" action="/actions/{% if status.active %}disable{% else %}enable{% endif %}"
+            onsubmit="return confirm('{% if status.active %}Disable{% else %}Enable{% endif %} UFW? This opens the confirm window.');">
+        <button type="submit" class="{% if status.active %}ghost danger{% else %}ghost{% endif %}">
+          {% if status.active %}Disable UFW{% else %}Enable UFW{% endif %}
+        </button>
+      </form>
+    </div>
+    {% else %}
+    <p class="muted tiny">Confirm or roll back the pending change before changing policy.</p>
+    {% endif %}
+  </section>
+</div>
+
+<section class="panel" id="rules" data-live="rules">
+  <div class="panel-head">
+    <h2>Rules</h2>
+    <span class="count">{{ rules|length }} rule{{ "" if rules|length == 1 else "s" }}</span>
   </div>
   {% if rules and not pending %}
-  <p class="hint">Drag rows by the handle to reorder. Drop starts the confirm window.</p>
+  <p class="hint">Drag rows by the handle to reorder, or focus the handle and use the arrow keys. Each move opens the confirm window.</p>
   {% endif %}
 
   <div class="rule-list" id="rule-list" data-locked="{{ 1 if pending else 0 }}" role="list">
     {% for r in rules %}
-    <div class="rule-row"
-         role="listitem"
-         data-number="{{ r.number }}"
-         {% if not pending %}draggable="true"{% endif %}>
+    <div class="rule-row" role="listitem" data-number="{{ r.number }}">
       {% if not pending %}
-      <button type="button" class="drag-handle" aria-label="Drag to reorder rule {{ r.number }}" tabindex="-1">⠿</button>
+      <span class="drag-handle" draggable="true" role="button" tabindex="0"
+            aria-label="Reorder rule {{ r.number }}. Drag, or press arrow up or down."
+            title="Drag to reorder">⠿</span>
       {% else %}
-      <span class="drag-handle" aria-hidden="true">·</span>
+      <span class="drag-handle" aria-hidden="true"></span>
       {% endif %}
+      <span class="rule-num">#{{ r.number }}</span>
       <div class="rule-body">
         <div class="rule-primary">
-          <span class="rule-num">#{{ r.number }}</span>
-          <span class="rule-to"><code>{{ r.to }}</code></span>
-          <span class="badge action-{{ r.action|lower }}">{{ r.action }}</span>
-          <span class="muted tiny">{{ r.direction }}</span>
-          <span class="rule-from">{{ r.from_ }}</span>
+          <span class="rule-to">{{ r.to }}</span>
+          <span class="badge action-{{ r.action|lower }}">{{ r.action|lower }}</span>
+          <span class="rule-dir">{{ r.direction|lower }}</span>
+          <span class="rule-from"><span class="muted">from</span> {{ r.from_ }}</span>
           <span class="badge family-{{ r.family }}">{{ r.family }}</span>
         </div>
         {% if r.comment %}
-        <div class="rule-comment">{{ r.comment }}</div>
+        <div class="rule-comment" title="{{ r.comment }}">{{ r.comment }}</div>
         {% endif %}
       </div>
       <div class="rule-actions">
         {% if not pending %}
-        {% if r.number > 1 %}
-        <form method="post" action="/actions/move/{{ r.number }}">
-          <input type="hidden" name="to_number" value="{{ r.number - 1 }}" />
-          <button type="submit" class="ghost" aria-label="Move rule {{ r.number }} up">↑</button>
-        </form>
-        {% endif %}
-        {% if not loop.last %}
-        <form method="post" action="/actions/move/{{ r.number }}">
-          <input type="hidden" name="to_number" value="{{ r.number + 1 }}" />
-          <button type="submit" class="ghost" aria-label="Move rule {{ r.number }} down">↓</button>
-        </form>
-        {% endif %}
-        <a class="ghost-link" href="/edit/{{ r.number }}">Edit</a>
+        <span class="move-slot">
+          {% if r.number > 1 %}
+          <form method="post" action="/actions/move/{{ r.number }}">
+            <input type="hidden" name="to_number" value="{{ r.number - 1 }}" />
+            <button type="submit" class="ghost icon" aria-label="Move rule {{ r.number }} up">↑</button>
+          </form>
+          {% else %}<span class="spacer" aria-hidden="true"></span>{% endif %}
+          {% if not loop.last %}
+          <form method="post" action="/actions/move/{{ r.number }}">
+            <input type="hidden" name="to_number" value="{{ r.number + 1 }}" />
+            <button type="submit" class="ghost icon" aria-label="Move rule {{ r.number }} down">↓</button>
+          </form>
+          {% else %}<span class="spacer" aria-hidden="true"></span>{% endif %}
+        </span>
+        <a class="ghost-link" href="/edit/{{ r.number }}" aria-label="Edit rule {{ r.number }}">Edit</a>
         <form method="post" action="/actions/delete/{{ r.number }}"
-              onsubmit="return confirm('Delete rule {{ r.number }}? Starts confirm window.');">
+              onsubmit="return confirm('Delete rule {{ r.number }}? This opens the confirm window.');">
           <button type="submit" class="ghost danger" aria-label="Delete rule {{ r.number }}">Delete</button>
         </form>
         {% endif %}
       </div>
     </div>
     {% else %}
-    <div class="empty-state">No rules parsed from UFW.</div>
+    <div class="empty">
+      <strong>No rules yet</strong>
+      {% if status.default_incoming == "deny" %}
+      Incoming is deny by default, so nothing gets in. Add an allow rule for SSH before anything else.
+      {% else %}
+      Incoming is {{ status.default_incoming }} by default. Add rules below to control what gets in.
+      {% endif %}
+      <a class="ghost-link accent" href="#add">Add a rule</a>
+    </div>
     {% endfor %}
   </div>
 </section>
 
 {% if edit_rule %}
-<section class="card">
-  <h2>Edit rule #{{ edit_rule.number }}</h2>
+<section class="panel" id="add">
+  <div class="panel-head"><h2>Edit rule #{{ edit_rule.number }}</h2></div>
   <form method="post" action="/actions/edit/{{ edit_rule.number }}" class="grid">
     <label>Action
       <select name="action">
@@ -156,7 +271,7 @@
         <option value="out" {% if edit_rule.direction == 'OUT' %}selected{% endif %}>out</option>
       </select>
     </label>
-    <label>Port / app
+    <label>Port or app
       <input name="port_or_app" value="{{ edit_rule.to|replace(' (v6)', '') }}" required list="app-profiles" />
     </label>
     <label>From
@@ -166,14 +281,15 @@
       <input name="comment" value="{{ edit_rule.comment }}" placeholder="SSH management" />
     </label>
     <div class="form-actions">
-      <button type="submit">Save (starts {{ confirm_seconds }}s confirm)</button>
+      <button type="submit">Save rule</button>
       <a class="ghost-link" href="/">Cancel</a>
+      <span class="muted tiny">Opens a {{ confirm_seconds }}s confirm window.</span>
     </div>
   </form>
 </section>
 {% else %}
-<section class="card" id="add">
-  <h2>Add rule</h2>
+<section class="panel" id="add">
+  <div class="panel-head"><h2>Add rule</h2></div>
   {% if pending %}
   <p class="muted">Confirm or roll back the pending change before adding another rule.</p>
   {% else %}
@@ -191,7 +307,7 @@
         <option value="out" {% if prefill.direction == 'out' %}selected{% endif %}>out</option>
       </select>
     </label>
-    <label>Port / app
+    <label>Port or app
       <input name="port_or_app" value="{{ prefill.port_or_app }}" placeholder="22/tcp" required list="app-profiles" />
     </label>
     <label>From
@@ -200,16 +316,14 @@
     <label>Comment
       <input name="comment" value="{{ prefill.comment }}" placeholder="SSH management" />
     </label>
-    <label>Insert at #
-      <input name="insert_at" type="number" min="1" placeholder="end" />
+    <label>Insert at position
+      <input name="insert_at" type="number" min="1" placeholder="end of list" />
     </label>
     <div class="form-actions">
-      <button type="submit">Apply (starts {{ confirm_seconds }}s confirm)</button>
+      <button type="submit">Add rule</button>
+      <span class="muted tiny">Opens a {{ confirm_seconds }}s confirm window.{% if apps %} App profiles: {{ apps|join(", ") }}.{% endif %}</span>
     </div>
   </form>
-  {% if apps %}
-  <p class="muted tiny">App profiles: {{ apps|join(", ") }}</p>
-  {% endif %}
   {% endif %}
 </section>
 {% endif %}
@@ -220,20 +334,13 @@
   {% endfor %}
 </datalist>
 
-<section class="card" id="traffic-logs">
-  <div class="section-head">
+<section class="panel" id="traffic-logs" data-live="traffic">
+  <div class="panel-head">
     <h2>Traffic hits</h2>
-    <a class="ghost-link" href="/#traffic-logs">Refresh</a>
+    <span class="count">{{ log_rows|length }} most recent</span>
   </div>
-  <p class="muted tiny">
-    Recent UFW log events (mostly blocks at logging level low).
-    {% if log_sources %}
-    Sources: {{ log_sources|join(", ") }}
-    {% else %}
-    No log files readable yet — ensure UFW logging is on and <code>/var/log</code> is mounted.
-    {% endif %}
-  </p>
-  <div class="table-wrap">
+  {% if log_rows %}
+  <div class="table-wrap is-tall" tabindex="0" aria-label="Recent traffic hits">
   <table>
     <thead>
       <tr>
@@ -246,40 +353,62 @@
     </thead>
     <tbody>
       {% for h in log_rows %}
+      {% set t = h.timestamp %}
       <tr>
-        <td class="muted">{{ h.timestamp }}</td>
-        <td><span class="badge action-{{ h.action|lower }}">{{ h.action }}</span></td>
-        <td><code>{{ h.summary }}</code></td>
+        <td class="when" title="{{ t }}">{{ t[5:10] ~ " " ~ t[11:19] if (t[:4].isdigit() and t|length >= 19) else t }}</td>
+        <td><span class="badge action-{{ h.action|lower }}">{{ h.action|lower }}</span></td>
+        <td><code>{{ h.summary[h.action|length + 1:] if h.summary.startswith(h.action ~ " ") else h.summary }}</code></td>
         <td>{{ h.rule_hint if h.rule_hint else "—" }}</td>
-        <td>
+        <td class="nowrap">
           {% if h.src and not pending %}
-          <a class="ghost-link"
+          <a class="ghost-link accent"
              href="/?action=deny&amp;from_address={{ h.src|urlencode }}&amp;port_or_app=Anywhere&amp;comment={{ ('block ' ~ h.src)|urlencode }}#add">
             Block IP
           </a>
           {% endif %}
         </td>
       </tr>
-      {% else %}
-      <tr><td colspan="5" class="muted">No recent UFW hits in the log files.</td></tr>
       {% endfor %}
     </tbody>
   </table>
   </div>
+  {% elif status.logging == "off" %}
+  <div class="empty">
+    <strong>Logging is off</strong>
+    UFW isn't writing anything to the log, so there are no hits to show.
+    {% if not pending %}
+    <form method="post" action="/actions/logging">
+      <input type="hidden" name="level" value="low" />
+      <button type="submit" class="ghost">Set logging to low</button>
+    </form>
+    {% endif %}
+  </div>
+  {% elif not log_sources %}
+  <div class="empty">
+    <strong>No readable log files</strong>
+    The container can't see /var/log/ufw.log, kern.log or syslog. Mount /var/log read-only into the container.
+  </div>
+  {% else %}
+  <div class="empty">
+    <strong>No hits yet</strong>
+    Nothing blocked or allowed has been logged recently. At logging level {{ status.logging }}, blocks show up here as they happen.
+  </div>
+  {% endif %}
 </section>
 
-<section class="card" id="listening">
-  <div class="section-head">
+<section class="panel" id="listening" data-live="listening">
+  <div class="panel-head">
     <h2>Listening ports</h2>
-    <span class="muted">via ss</span>
+    <span class="count">{% if uncovered %}{{ uncovered|length }} with no rule{% else %}from ss{% endif %}</span>
   </div>
+  {% if ports %}
   <div class="table-wrap">
   <table>
     <thead>
       <tr>
-        <th scope="col">Proto</th>
         <th scope="col">Port</th>
-        <th scope="col">Local</th>
+        <th scope="col">Proto</th>
+        <th scope="col">Local address</th>
         <th scope="col">Family</th>
         <th scope="col">Process</th>
         <th scope="col"><span class="sr-only">Actions</span></th>
@@ -287,42 +416,49 @@
     </thead>
     <tbody>
       {% for p in ports %}
-      <tr>
+      {% set is_unc = (p.proto ~ "/" ~ p.port) in uncovered_keys %}
+      <tr {% if is_unc %}class="is-uncovered"{% endif %}>
+        <td><code>{{ p.port }}</code>{% if is_unc %} <span class="badge action-limit">no rule</span>{% endif %}</td>
         <td>{{ p.proto }}</td>
-        <td><code>{{ p.port }}</code></td>
         <td><code>{{ p.local }}</code></td>
         <td><span class="badge family-{{ p.family }}">{{ p.family }}</span></td>
         <td>{{ p.process or "—" }}</td>
-        <td>
+        <td class="nowrap">
           {% if not pending and p.port.isdigit() %}
-          <a class="ghost-link"
-             href="/?action=allow&amp;port_or_app={{ (p.port ~ '/' ~ p.proto)|urlencode }}&amp;comment={{ ((p.process or 'listen') ~ ' ' ~ p.port)|urlencode }}">
+          <a class="ghost-link accent"
+             href="/?action=allow&amp;port_or_app={{ (p.port ~ '/' ~ p.proto)|urlencode }}&amp;comment={{ ((p.process or 'listen') ~ ' ' ~ p.port)|urlencode }}#add">
             Allow
           </a>
           {% endif %}
         </td>
       </tr>
-      {% else %}
-      <tr><td colspan="6" class="muted">No listening sockets found (is <code>ss</code> installed in the container?).</td></tr>
       {% endfor %}
     </tbody>
   </table>
   </div>
+  {% else %}
+  <div class="empty">
+    <strong>No listening sockets found</strong>
+    Either nothing is listening, or <code>ss</code> isn't available in the container (install iproute2).
+  </div>
+  {% endif %}
 </section>
 
-<section class="card two-col">
-  <div>
-    <div class="section-head">
+<div class="two-col">
+  <section class="panel" id="backup">
+    <div class="panel-head">
       <h2>Backup</h2>
-      <a class="ghost-link" href="/export">Download export</a>
+      <a class="ghost-link accent" href="/export">Download export</a>
     </div>
-    <p class="muted tiny">Snapshots under data/snapshots from prior mutations. Restoring starts a confirm window.</p>
-    {% if not pending %}
+    <p class="muted tiny">A snapshot is saved before every change. Restoring one opens the confirm window.</p>
+    {% if not snapshots %}
+    <div class="empty"><strong>No snapshots yet</strong>The first one is taken when you make a change.</div>
+    {% elif not pending %}
     <form method="post" action="/actions/restore" class="inline-form"
-          onsubmit="return confirm('Restore this snapshot? Starts confirm window.');">
+          onsubmit="return confirm('Restore this snapshot? This opens the confirm window.');">
       <label class="sr-only" for="snapshot-name">Snapshot</label>
       <select id="snapshot-name" name="snapshot_name" required>
-        <option value="">Select snapshot…</option>
+        <option value="">Choose a snapshot</option>
         {% for s in snapshots %}
         <option value="{{ s.name }}">{{ s.name }}</option>
         {% endfor %}
@@ -332,9 +468,11 @@
     {% else %}
     <p class="muted tiny">Confirm or roll back before restoring.</p>
     {% endif %}
-  </div>
-  <div>
-    <div class="section-head"><h2>Change history</h2></div>
+  </section>
+
+  <section class="panel" id="history" data-live="history">
+    <div class="panel-head"><h2>Change history</h2></div>
+    {% if history %}
     <div class="table-wrap">
     <table>
       <thead>
@@ -347,18 +485,19 @@
       <tbody>
         {% for e in history %}
         <tr>
-          <td class="muted">{{ e.iso }}</td>
-          <td><span class="badge {% if e.outcome == 'confirmed' %}ok{% else %}bad{% endif %}">{{ e.outcome }}</span></td>
+          <td class="when">{{ e.iso }}</td>
+          <td><span class="badge {% if e.outcome == 'confirmed' %}ok{% else %}bad{% endif %}">{{ e.outcome|replace("_", " ") }}</span></td>
           <td>{{ e.description }}</td>
         </tr>
-        {% else %}
-        <tr><td colspan="3" class="muted">No confirmed or rolled-back changes yet.</td></tr>
         {% endfor %}
       </tbody>
     </table>
     </div>
-  </div>
-</section>
+    {% else %}
+    <div class="empty"><strong>No changes yet</strong>Confirmed and rolled-back changes are listed here.</div>
+    {% endif %}
+  </section>
+</div>
 
-<meta http-equiv="refresh" content="45">
+<noscript><meta http-equiv="refresh" content="45"></noscript>
 {% endblock %}

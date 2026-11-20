@@ -55,3 +55,7 @@ def test_login_and_dashboard_shows_comment(client: TestClient):
     assert 'id="rule-list"' in page.text
     assert "Drag rows" in page.text
     assert "/static/app.js" in page.text
+    assert "Blocked traffic" in page.text
+    assert "Open ports with no rule" in page.text
+    assert 'draggable="true"' in page.text
+    assert 'http-equiv="refresh"' not in page.text.replace("<noscript><meta http-equiv=\"refresh\"", "")
