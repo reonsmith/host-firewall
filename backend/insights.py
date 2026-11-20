@@ -100,17 +100,41 @@ def _covered_ports(rules) -> tuple[set[str], list[tuple[int, int]]]:
     return singles, ranges
 
 
+def _is_docker(p) -> bool:
+    return (p.process or "").startswith("docker-proxy")
+
+
+def docker_published(ports) -> list:
+    """Non-loopback ports published by Docker (docker-proxy).
+
+    Docker inserts its own iptables rules ahead of UFW's, so traffic to these
+    ports is not filtered by UFW rules or default policies.
+    """
+    out = []
+    seen: set[tuple[str, str]] = set()
+    for p in ports:
+        if not _is_docker(p) or _is_loopback(p.local):
+            continue
+        key = (p.proto, p.port)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(p)
+    return out
+
+
 def uncovered_ports(ports, rules) -> list:
     """Non-loopback listening ports with no allow/limit rule naming that port.
 
     App-profile rules (e.g. "OpenSSH") can't be mapped to ports here, so a port
-    covered only by an app profile is still reported.
+    covered only by an app profile is still reported. Docker-published ports are
+    excluded: UFW rules don't apply to them (see docker_published).
     """
     singles, ranges = _covered_ports(rules)
     out = []
     seen: set[tuple[str, str]] = set()
     for p in ports:
-        if not p.port.isdigit() or _is_loopback(p.local):
+        if not p.port.isdigit() or _is_loopback(p.local) or _is_docker(p):
             continue
         key = (p.proto, p.port)
         if key in seen:

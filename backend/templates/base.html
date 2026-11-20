@@ -15,6 +15,7 @@
       <span class="brand-mark" aria-hidden="true"></span>
       <strong>Host Firewall</strong>
       <span class="host-chip">{{ label }}</span>
+      {% if demo %}<span class="host-chip is-demo">demo</span>{% endif %}
     </div>
     {% block header_actions %}{% endblock %}
   </header>

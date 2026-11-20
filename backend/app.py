@@ -19,7 +19,8 @@ from pydantic import BaseModel, Field
 from backend.config import Settings, load_settings
 from backend.export_backup import build_ufw_export_tar, list_snapshots
 from backend.history import ChangeHistory
-from backend.insights import hourly_blocks, relative_time, uncovered_ports
+from backend.insights import docker_published, hourly_blocks, relative_time, uncovered_ports
+from backend.ratelimit import LoginLimiter
 from backend.listening import list_listening_ports
 from backend.pending import (
     NoPendingError,
@@ -41,7 +42,7 @@ from backend.ufw_runner import (
 
 log = logging.getLogger("host-firewall")
 
-APP_VERSION = "0.3.1"
+APP_VERSION = "0.4.0"
 
 BASE_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
@@ -89,6 +90,12 @@ def create_app(
 ) -> FastAPI:
     settings = settings or load_settings()
     settings.data_dir.mkdir(parents=True, exist_ok=True)
+    if settings.demo and runner is None:
+        from backend.demo import prepare_demo
+
+        runner, demo_ss = prepare_demo(settings.data_dir, settings.ufw_dir, settings.log_paths[0])
+        listening_runner = listening_runner or demo_ss
+    limiter = LoginLimiter()
     pending = PendingStore(settings.data_dir, ttl_seconds=settings.confirm_seconds)
     history = ChangeHistory(settings.data_dir)
     ufw = runner or UfwRunner(settings.ufw_bin)
@@ -175,16 +182,24 @@ def create_app(
     if static_dir.is_dir():
         app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
-    def _set_session(response: Response) -> None:
+    def _set_session(response: Response, request: Request) -> None:
         token = signer.dumps({"ok": True, "n": secrets.token_hex(8)})
+        secure = settings.cookie_secure
+        if secure is None:
+            # uvicorn runs with proxy_headers, so this honours X-Forwarded-Proto
+            secure = request.url.scheme == "https"
         response.set_cookie(
             cookie_name,
             token,
             httponly=True,
             samesite="lax",
-            secure=False,
+            secure=secure,
             max_age=60 * 60 * 12,
         )
+
+    def _lockout_message(seconds: int) -> str:
+        minutes = max(1, round(seconds / 60))
+        return f"Too many failed attempts. Try again in {minutes} min."
 
     def _authed(request: Request) -> bool:
         raw = request.cookies.get(cookie_name)
@@ -256,6 +271,7 @@ def create_app(
         ]
         ports = list_listening_ports(runner=listening_runner)
         uncovered = uncovered_ports(ports, rules)
+        docker_ports = docker_published(ports)
         recent_history = [e.to_dict() for e in history.recent(40)]
         last_change = None
         if recent_history:
@@ -270,6 +286,9 @@ def create_app(
             "chart": chart,
             "uncovered": uncovered,
             "uncovered_keys": {f"{p.proto}/{p.port}" for p in uncovered},
+            "docker_ports": docker_ports,
+            "docker_keys": {f"{p.proto}/{p.port}" for p in docker_ports},
+            "demo": settings.demo,
             "last_change": last_change,
             "label": settings.hostname_label,
             "rules": rules,
@@ -294,10 +313,20 @@ def create_app(
         return {"ok": True, "label": settings.hostname_label, "version": APP_VERSION}
 
     @app.post("/api/login")
-    def api_login(response: Response, password: str = Form()) -> dict:
+    def api_login(request: Request, response: Response, password: str = Form()) -> dict:
+        ip = client_ip(request)
+        wait = limiter.retry_after(ip)
+        if wait:
+            raise HTTPException(
+                status_code=429,
+                detail=_lockout_message(wait),
+                headers={"Retry-After": str(wait)},
+            )
         if not _password_ok(password, settings.password):
+            limiter.failure(ip)
             raise HTTPException(status_code=401, detail="Invalid password")
-        _set_session(response)
+        limiter.success(ip)
+        _set_session(response, request)
         return {"ok": True}
 
     @app.post("/api/logout")
@@ -650,22 +679,35 @@ def create_app(
         return templates.TemplateResponse(
             request,
             "login.html",
-            {"label": settings.hostname_label, "error": None},
+            {"label": settings.hostname_label, "error": None, "demo": settings.demo,
+             "version": APP_VERSION},
         )
 
     @app.post("/login", response_class=HTMLResponse)
     async def login_submit(request: Request) -> Response:
-        form = await request.form()
-        password = str(form.get("password") or "")
-        if not _password_ok(password, settings.password):
+        ip = client_ip(request)
+
+        def fail(message: str, status: int, headers: dict | None = None) -> Response:
             return templates.TemplateResponse(
                 request,
                 "login.html",
-                {"label": settings.hostname_label, "error": "Invalid password"},
-                status_code=401,
+                {"label": settings.hostname_label, "error": message, "demo": settings.demo,
+                 "version": APP_VERSION},
+                status_code=status,
+                headers=headers,
             )
+
+        wait = limiter.retry_after(ip)
+        if wait:
+            return fail(_lockout_message(wait), 429, {"Retry-After": str(wait)})
+        form = await request.form()
+        password = str(form.get("password") or "")
+        if not _password_ok(password, settings.password):
+            limiter.failure(ip)
+            return fail("Invalid password", 401)
+        limiter.success(ip)
         resp = RedirectResponse("/", status_code=303)
-        _set_session(resp)
+        _set_session(resp, request)
         return resp
 
     @app.get("/", response_class=HTMLResponse)

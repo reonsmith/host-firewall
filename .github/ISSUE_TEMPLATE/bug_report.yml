@@ -1,0 +1,53 @@
+name: Bug report
+description: Something in the panel doesn't work as expected
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Security problems (auth bypass, lockout, anything exploitable) go to a
+        [private advisory](https://github.com/reonsmith/host-firewall/security/advisories/new), not here.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Shown by `GET /api/health`, or the image tag you run.
+      placeholder: "0.4.0"
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Host OS and UFW version
+      placeholder: "Ubuntu 24.04, ufw 0.36.2"
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How you run it
+      options:
+        - Docker Compose (published image)
+        - Docker Compose (built from source)
+        - Python directly
+        - Demo mode
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what you saw instead.
+    validations:
+      required: true
+  - type: textarea
+    id: ufw
+    attributes:
+      label: Relevant `ufw status numbered` output
+      description: Redact public IPs if you prefer. This is the most useful thing for parsing bugs.
+      render: text
+  - type: textarea
+    id: logs
+    attributes:
+      label: Container logs
+      render: text

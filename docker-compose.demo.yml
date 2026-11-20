@@ -1,0 +1,14 @@
+# Demo: sample rules, ports and traffic. No host access, no capabilities.
+#   docker compose -f docker-compose.demo.yml up
+# then open http://localhost:8080 and sign in with: host-firewall-demo
+services:
+  host-firewall-demo:
+    image: ghcr.io/reonsmith/host-firewall:${HOST_FIREWALL_TAG:-latest}
+    build: .
+    container_name: host-firewall-demo
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      HOST_FIREWALL_DEMO: "1"
+      HOST_FIREWALL_BIND: 0.0.0.0
+      HOST_FIREWALL_PORT: "8080"
