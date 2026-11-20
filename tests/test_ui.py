@@ -52,3 +52,6 @@ def test_login_and_dashboard_shows_comment(client: TestClient):
     assert "Listening ports" in page.text
     assert "ipv6" in page.text
     assert "Change history" in page.text
+    assert 'id="rule-list"' in page.text
+    assert "Drag rows" in page.text
+    assert "/static/app.js" in page.text

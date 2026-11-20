@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}{{ label }} — Host Firewall{% endblock %}
 {% block header_actions %}
-<div class="row header-actions">
+<div class="header-actions">
   <a class="ghost-link" href="/export">Export</a>
   <a class="ghost-link" href="/">Refresh</a>
   <form method="post" action="/actions/logout"><button type="submit" class="ghost">Sign out</button></form>
@@ -11,14 +11,16 @@
 
 {% if pending %}
 <section class="banner warn" id="pending-banner"
-         data-expires="{{ pending.expires_at }}">
+         data-expires="{{ pending.expires_at }}"
+         role="status"
+         aria-live="polite">
   <div>
     <strong>Pending change</strong> — confirm within
     <span id="countdown">{{ pending.seconds_remaining()|round(0)|int }}</span>s
-    or it will roll back.
+    or it rolls back.
     <div class="muted">{{ pending.description }}</div>
     {% if pending.warn_blocks_client %}
-    <div class="error">Warning: this change may block your current client IP ({{ pending.client_ip }}).</div>
+    <div class="error">Warning: this may block your current client IP ({{ pending.client_ip }}).</div>
     {% endif %}
   </div>
   <div class="row">
@@ -26,21 +28,6 @@
     <form method="post" action="/actions/rollback"><button type="submit" class="danger">Rollback now</button></form>
   </div>
 </section>
-<script>
-(function () {
-  const el = document.getElementById("pending-banner");
-  const cd = document.getElementById("countdown");
-  if (!el || !cd) return;
-  const expires = parseFloat(el.dataset.expires) * 1000;
-  function tick() {
-    const left = Math.max(0, Math.ceil((expires - Date.now()) / 1000));
-    cd.textContent = String(left);
-    if (left <= 0) location.reload();
-    else setTimeout(tick, 1000);
-  }
-  tick();
-})();
-</script>
 {% endif %}
 
 <section class="status-strip card">
@@ -48,10 +35,10 @@
     <span class="badge {% if status.active %}ok{% else %}bad{% endif %}">
       {{ "Active" if status.active else "Inactive" }}
     </span>
-    <span class="muted">Logging <strong>{{ status.logging }}</strong></span>
-    <span class="muted">In <strong>{{ status.default_incoming }}</strong></span>
-    <span class="muted">Out <strong>{{ status.default_outgoing }}</strong></span>
-    <span class="muted">Routed <strong>{{ status.default_routed }}</strong></span>
+    <span class="stat-pill">Logging <strong>{{ status.logging }}</strong></span>
+    <span class="stat-pill">In <strong>{{ status.default_incoming }}</strong></span>
+    <span class="stat-pill">Out <strong>{{ status.default_outgoing }}</strong></span>
+    <span class="stat-pill">Routed <strong>{{ status.default_routed }}</strong></span>
   </div>
   {% if not pending %}
   <div class="status-controls">
@@ -62,12 +49,14 @@
       </button>
     </form>
     <form method="post" action="/actions/default" class="inline-form">
-      <select name="direction">
+      <label class="sr-only" for="default-direction">Default direction</label>
+      <select id="default-direction" name="direction">
         <option value="incoming">incoming</option>
         <option value="outgoing">outgoing</option>
         <option value="routed">routed</option>
       </select>
-      <select name="policy">
+      <label class="sr-only" for="default-policy">Default policy</label>
+      <select id="default-policy" name="policy">
         {% for p in default_policies %}
         <option value="{{ p }}">{{ p }}</option>
         {% endfor %}
@@ -75,7 +64,8 @@
       <button type="submit" class="ghost">Set default</button>
     </form>
     <form method="post" action="/actions/logging" class="inline-form">
-      <select name="level">
+      <label class="sr-only" for="logging-level">Logging level</label>
+      <select id="logging-level" name="level">
         {% for lvl in logging_levels %}
         <option value="{{ lvl }}" {% if status.logging == lvl %}selected{% endif %}>{{ lvl }}</option>
         {% endfor %}
@@ -88,63 +78,60 @@
   {% endif %}
 </section>
 
-<section class="card">
+<section class="card" id="rules">
   <div class="section-head">
     <h1>Rules</h1>
     <span class="muted">{{ rules|length }} rule{{ "" if rules|length == 1 else "s" }}</span>
   </div>
-  <div class="table-wrap">
-  <table>
-    <thead>
-      <tr>
-        <th>#</th>
-        <th>To</th>
-        <th>Action</th>
-        <th>From</th>
-        <th>Family</th>
-        <th>Comment</th>
-        <th></th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for r in rules %}
-      <tr>
-        <td>{{ r.number }}</td>
-        <td><code>{{ r.to }}</code></td>
-        <td>
-          <span class="badge action-{{ r.action|lower }}">{{ r.action }}</span>
-          <span class="muted">{{ r.direction }}</span>
-        </td>
-        <td>{{ r.from_ }}</td>
-        <td><span class="badge family-{{ r.family }}">{{ r.family }}</span></td>
-        <td>{{ r.comment if r.comment else "—" }}</td>
-        <td class="row actions">
-          {% if not pending %}
-          {% if r.number > 1 %}
-          <form method="post" action="/actions/move/{{ r.number }}">
-            <input type="hidden" name="to_number" value="{{ r.number - 1 }}" />
-            <button type="submit" class="ghost" title="Move up">↑</button>
-          </form>
-          {% endif %}
-          {% if not loop.last %}
-          <form method="post" action="/actions/move/{{ r.number }}">
-            <input type="hidden" name="to_number" value="{{ r.number + 1 }}" />
-            <button type="submit" class="ghost" title="Move down">↓</button>
-          </form>
-          {% endif %}
-          <a class="ghost-link" href="/edit/{{ r.number }}">Edit</a>
-          <form method="post" action="/actions/delete/{{ r.number }}"
-                onsubmit="return confirm('Delete rule {{ r.number }}? Starts confirm window.');">
-            <button type="submit" class="ghost danger">Delete</button>
-          </form>
-          {% endif %}
-        </td>
-      </tr>
+  {% if rules and not pending %}
+  <p class="hint">Drag rows by the handle to reorder. Drop starts the confirm window.</p>
+  {% endif %}
+
+  <div class="rule-list" id="rule-list" data-locked="{{ 1 if pending else 0 }}" role="list">
+    {% for r in rules %}
+    <div class="rule-row"
+         role="listitem"
+         data-number="{{ r.number }}"
+         {% if not pending %}draggable="true"{% endif %}>
+      {% if not pending %}
+      <button type="button" class="drag-handle" aria-label="Drag to reorder rule {{ r.number }}" tabindex="-1">⠿</button>
       {% else %}
-      <tr><td colspan="7" class="muted">No rules parsed from UFW.</td></tr>
-      {% endfor %}
-    </tbody>
-  </table>
+      <span class="drag-handle" aria-hidden="true">·</span>
+      {% endif %}
+      <span class="rule-num">#{{ r.number }}</span>
+      <div class="rule-to"><code>{{ r.to }}</code></div>
+      <div class="rule-action">
+        <span class="badge action-{{ r.action|lower }}">{{ r.action }}</span>
+        <span class="muted tiny">{{ r.direction }}</span>
+      </div>
+      <div class="rule-from">{{ r.from_ }}</div>
+      <div class="rule-family"><span class="badge family-{{ r.family }}">{{ r.family }}</span></div>
+      <div class="rule-comment" title="{{ r.comment }}">{{ r.comment if r.comment else "—" }}</div>
+      <div class="rule-actions">
+        {% if not pending %}
+        {% if r.number > 1 %}
+        <form method="post" action="/actions/move/{{ r.number }}">
+          <input type="hidden" name="to_number" value="{{ r.number - 1 }}" />
+          <button type="submit" class="ghost" aria-label="Move rule {{ r.number }} up">↑</button>
+        </form>
+        {% endif %}
+        {% if not loop.last %}
+        <form method="post" action="/actions/move/{{ r.number }}">
+          <input type="hidden" name="to_number" value="{{ r.number + 1 }}" />
+          <button type="submit" class="ghost" aria-label="Move rule {{ r.number }} down">↓</button>
+        </form>
+        {% endif %}
+        <a class="ghost-link" href="/edit/{{ r.number }}">Edit</a>
+        <form method="post" action="/actions/delete/{{ r.number }}"
+              onsubmit="return confirm('Delete rule {{ r.number }}? Starts confirm window.');">
+          <button type="submit" class="ghost danger" aria-label="Delete rule {{ r.number }}">Delete</button>
+        </form>
+        {% endif %}
+      </div>
+    </div>
+    {% else %}
+    <div class="empty-state">No rules parsed from UFW.</div>
+    {% endfor %}
   </div>
 </section>
 
@@ -179,7 +166,7 @@
   </form>
 </section>
 {% else %}
-<section class="card">
+<section class="card" id="add">
   <h2>Add rule</h2>
   {% if pending %}
   <p class="muted">Confirm or roll back the pending change before adding another rule.</p>
@@ -230,7 +217,7 @@
     <h2>Traffic hits</h2>
     <a class="ghost-link" href="/#traffic-logs">Refresh</a>
   </div>
-  <p class="muted">
+  <p class="muted tiny">
     Recent UFW log events (mostly blocks at logging level low).
     {% if log_sources %}
     Sources: {{ log_sources|join(", ") }}
@@ -242,11 +229,11 @@
   <table>
     <thead>
       <tr>
-        <th>When</th>
-        <th>Action</th>
-        <th>Flow</th>
-        <th>Likely rule</th>
-        <th></th>
+        <th scope="col">When</th>
+        <th scope="col">Action</th>
+        <th scope="col">Flow</th>
+        <th scope="col">Likely rule</th>
+        <th scope="col"><span class="sr-only">Actions</span></th>
       </tr>
     </thead>
     <tbody>
@@ -282,12 +269,12 @@
   <table>
     <thead>
       <tr>
-        <th>Proto</th>
-        <th>Port</th>
-        <th>Local</th>
-        <th>Family</th>
-        <th>Process</th>
-        <th></th>
+        <th scope="col">Proto</th>
+        <th scope="col">Port</th>
+        <th scope="col">Local</th>
+        <th scope="col">Family</th>
+        <th scope="col">Process</th>
+        <th scope="col"><span class="sr-only">Actions</span></th>
       </tr>
     </thead>
     <tbody>
@@ -321,11 +308,12 @@
       <h2>Backup</h2>
       <a class="ghost-link" href="/export">Download export</a>
     </div>
-    <p class="muted">Snapshots under data/snapshots from prior mutations. Restoring starts a confirm window.</p>
+    <p class="muted tiny">Snapshots under data/snapshots from prior mutations. Restoring starts a confirm window.</p>
     {% if not pending %}
     <form method="post" action="/actions/restore" class="inline-form"
           onsubmit="return confirm('Restore this snapshot? Starts confirm window.');">
-      <select name="snapshot_name" required>
+      <label class="sr-only" for="snapshot-name">Snapshot</label>
+      <select id="snapshot-name" name="snapshot_name" required>
         <option value="">Select snapshot…</option>
         {% for s in snapshots %}
         <option value="{{ s.name }}">{{ s.name }}</option>
@@ -342,7 +330,11 @@
     <div class="table-wrap">
     <table>
       <thead>
-        <tr><th>When</th><th>Outcome</th><th>Change</th></tr>
+        <tr>
+          <th scope="col">When</th>
+          <th scope="col">Outcome</th>
+          <th scope="col">Change</th>
+        </tr>
       </thead>
       <tbody>
         {% for e in history %}
