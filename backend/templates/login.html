@@ -1,11 +1,12 @@
 {% extends "base.html" %}
-{% block title %}Login — Host Firewall{% endblock %}
+{% block title %}Sign in — Host Firewall{% endblock %}
+{% block page %}login{% endblock %}
 {% block content %}
 <div class="login-shell">
-  <section class="card narrow login-card">
-    <p class="eyebrow">Host UFW console</p>
+  <section class="panel login-card">
+    <span class="brand-mark" aria-hidden="true"></span>
     <h1>Sign in</h1>
-    <p class="muted">{{ label }}</p>
+    <p class="host">{{ label }}</p>
     {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
     <form method="post" action="/login" class="stack">
       <label>Password
@@ -13,7 +14,7 @@
       </label>
       <button type="submit">Sign in</button>
     </form>
-    <p class="muted tiny">Changes use a confirm-or-rollback window so a bad edit can undo itself.</p>
+    <p class="muted tiny login-foot">Every change opens a confirm window. If you lose access, it rolls itself back.</p>
   </section>
 </div>
 {% endblock %}

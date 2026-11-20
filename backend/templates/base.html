@@ -4,11 +4,12 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="color-scheme" content="dark" />
+  <meta name="theme-color" content="#0e0f0c" />
   <title>{% block title %}Host Firewall{% endblock %}</title>
-  <link rel="stylesheet" href="/static/app.css" />
-  <script src="/static/app.js" defer></script>
+  <link rel="stylesheet" href="/static/app.css?v={{ version or '' }}" />
+  <script src="/static/app.js?v={{ version or '' }}" defer></script>
 </head>
-<body>
+<body data-page="{% block page %}page{% endblock %}">
   <header class="top">
     <div class="brand">
       <span class="brand-mark" aria-hidden="true"></span>
