@@ -1,11 +1,12 @@
-import subprocess
 import time
 from pathlib import Path
+
+from fastapi.testclient import TestClient
 
 from backend.app import create_app
 from backend.config import Settings
 from backend.ufw_runner import UfwRunner
-from fastapi.testclient import TestClient
+from tests.conftest import make_ss_fake, make_ufw_fake
 
 
 def test_watchdog_rolls_back_without_http(tmp_path: Path):
@@ -25,14 +26,12 @@ def test_watchdog_rolls_back_without_http(tmp_path: Path):
         log_paths=(tmp_path / "missing.log",),
         log_limit=50,
     )
-
-    def fake_run(args, **kwargs):
-        return subprocess.CompletedProcess(args, 0, stdout="ok\n", stderr="")
-
+    fake_run, _ = make_ufw_fake()
     app = create_app(
         settings=settings,
         runner=UfwRunner(runner=fake_run),
         start_watchdog=True,
+        listening_runner=make_ss_fake(),
     )
     with TestClient(app) as client:
         assert client.post("/api/login", data={"password": "test-password-ok"}).status_code == 200

@@ -1,6 +1,6 @@
 [project]
 name = "host-firewall"
-version = "0.1.0"
+version = "0.2.0"
 description = "Host UFW panel with labeled rules and confirm-or-rollback"
 readme = "README.md"
 license = { text = "MIT" }

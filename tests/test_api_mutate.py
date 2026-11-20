@@ -1,4 +1,3 @@
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -7,14 +6,7 @@ from fastapi.testclient import TestClient
 from backend.app import create_app
 from backend.config import Settings
 from backend.ufw_runner import UfwRunner
-
-
-STATUS = """Status: active
-
-     To                         Action      From
-     --                         ------      ----
-[ 1] 22/tcp                     ALLOW IN    Anywhere                   # SSH
-"""
+from tests.conftest import make_ss_fake, make_ufw_fake
 
 
 @pytest.fixture
@@ -36,19 +28,12 @@ def env(tmp_path: Path):
         log_paths=(tmp_path / "missing.log",),
         log_limit=50,
     )
-
-    def fake_run(args, **kwargs):
-        cmd = args[1:]
-        if cmd[:2] == ["status", "numbered"]:
-            out = STATUS
-        else:
-            out = "ok\n"
-        return subprocess.CompletedProcess(args, 0, stdout=out, stderr="")
-
+    fake_run, _ = make_ufw_fake()
     app = create_app(
         settings=settings,
         runner=UfwRunner(runner=fake_run),
         start_watchdog=False,
+        listening_runner=make_ss_fake(),
     )
     client = TestClient(app)
     return client, settings
@@ -93,8 +78,9 @@ def test_confirm_keeps_change(env):
     r = client.post("/api/pending/confirm")
     assert r.status_code == 200
     assert client.get("/api/pending").json()["pending"] is None
-    # snapshot files still exist under data
     assert any(settings.data_dir.joinpath("snapshots").iterdir())
+    hist = client.get("/api/history").json()["history"]
+    assert hist and hist[0]["outcome"] == "confirmed"
 
 
 def test_rollback_restores_files(env):
@@ -105,7 +91,6 @@ def test_rollback_restores_files(env):
         "/api/rules",
         json={"action": "allow", "port_or_app": "9999/tcp"},
     )
-    # Simulate mutation side effect on files
     (settings.ufw_dir / "user.rules").write_text("AFTER\n", encoding="utf-8")
     r = client.post("/api/pending/rollback")
     assert r.status_code == 200

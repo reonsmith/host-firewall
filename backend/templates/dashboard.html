@@ -1,7 +1,11 @@
 {% extends "base.html" %}
 {% block title %}{{ label }} — Host Firewall{% endblock %}
 {% block header_actions %}
-<form method="post" action="/actions/logout"><button type="submit" class="ghost">Sign out</button></form>
+<div class="row header-actions">
+  <a class="ghost-link" href="/export">Export</a>
+  <a class="ghost-link" href="/">Refresh</a>
+  <form method="post" action="/actions/logout"><button type="submit" class="ghost">Sign out</button></form>
+</div>
 {% endblock %}
 {% block content %}
 
@@ -39,8 +43,57 @@
 </script>
 {% endif %}
 
+<section class="status-strip card">
+  <div class="status-main">
+    <span class="badge {% if status.active %}ok{% else %}bad{% endif %}">
+      {{ "Active" if status.active else "Inactive" }}
+    </span>
+    <span class="muted">Logging <strong>{{ status.logging }}</strong></span>
+    <span class="muted">In <strong>{{ status.default_incoming }}</strong></span>
+    <span class="muted">Out <strong>{{ status.default_outgoing }}</strong></span>
+    <span class="muted">Routed <strong>{{ status.default_routed }}</strong></span>
+  </div>
+  {% if not pending %}
+  <div class="status-controls">
+    <form method="post" action="/actions/{% if status.active %}disable{% else %}enable{% endif %}"
+          onsubmit="return confirm('{% if status.active %}Disable{% else %}Enable{% endif %} UFW? Starts confirm window.');">
+      <button type="submit" class="{% if status.active %}ghost danger{% else %}ghost{% endif %}">
+        {% if status.active %}Disable UFW{% else %}Enable UFW{% endif %}
+      </button>
+    </form>
+    <form method="post" action="/actions/default" class="inline-form">
+      <select name="direction">
+        <option value="incoming">incoming</option>
+        <option value="outgoing">outgoing</option>
+        <option value="routed">routed</option>
+      </select>
+      <select name="policy">
+        {% for p in default_policies %}
+        <option value="{{ p }}">{{ p }}</option>
+        {% endfor %}
+      </select>
+      <button type="submit" class="ghost">Set default</button>
+    </form>
+    <form method="post" action="/actions/logging" class="inline-form">
+      <select name="level">
+        {% for lvl in logging_levels %}
+        <option value="{{ lvl }}" {% if status.logging == lvl %}selected{% endif %}>{{ lvl }}</option>
+        {% endfor %}
+      </select>
+      <button type="submit" class="ghost">Set logging</button>
+    </form>
+  </div>
+  {% else %}
+  <p class="muted tiny">Confirm or roll back before changing policy.</p>
+  {% endif %}
+</section>
+
 <section class="card">
-  <h1>Rules</h1>
+  <div class="section-head">
+    <h1>Rules</h1>
+    <span class="muted">{{ rules|length }} rule{{ "" if rules|length == 1 else "s" }}</span>
+  </div>
+  <div class="table-wrap">
   <table>
     <thead>
       <tr>
@@ -48,6 +101,7 @@
         <th>To</th>
         <th>Action</th>
         <th>From</th>
+        <th>Family</th>
         <th>Comment</th>
         <th></th>
       </tr>
@@ -57,11 +111,27 @@
       <tr>
         <td>{{ r.number }}</td>
         <td><code>{{ r.to }}</code></td>
-        <td>{{ r.action }} {{ r.direction }}</td>
+        <td>
+          <span class="badge action-{{ r.action|lower }}">{{ r.action }}</span>
+          <span class="muted">{{ r.direction }}</span>
+        </td>
         <td>{{ r.from_ }}</td>
+        <td><span class="badge family-{{ r.family }}">{{ r.family }}</span></td>
         <td>{{ r.comment if r.comment else "—" }}</td>
-        <td class="row">
+        <td class="row actions">
           {% if not pending %}
+          {% if r.number > 1 %}
+          <form method="post" action="/actions/move/{{ r.number }}">
+            <input type="hidden" name="to_number" value="{{ r.number - 1 }}" />
+            <button type="submit" class="ghost" title="Move up">↑</button>
+          </form>
+          {% endif %}
+          {% if not loop.last %}
+          <form method="post" action="/actions/move/{{ r.number }}">
+            <input type="hidden" name="to_number" value="{{ r.number + 1 }}" />
+            <button type="submit" class="ghost" title="Move down">↓</button>
+          </form>
+          {% endif %}
           <a class="ghost-link" href="/edit/{{ r.number }}">Edit</a>
           <form method="post" action="/actions/delete/{{ r.number }}"
                 onsubmit="return confirm('Delete rule {{ r.number }}? Starts confirm window.');">
@@ -71,10 +141,11 @@
         </td>
       </tr>
       {% else %}
-      <tr><td colspan="6" class="muted">No rules parsed from UFW.</td></tr>
+      <tr><td colspan="7" class="muted">No rules parsed from UFW.</td></tr>
       {% endfor %}
     </tbody>
   </table>
+  </div>
 </section>
 
 {% if edit_rule %}
@@ -83,8 +154,9 @@
   <form method="post" action="/actions/edit/{{ edit_rule.number }}" class="grid">
     <label>Action
       <select name="action">
-        <option value="allow" {% if edit_rule.action == 'ALLOW' %}selected{% endif %}>allow</option>
-        <option value="deny" {% if edit_rule.action == 'DENY' %}selected{% endif %}>deny</option>
+        {% for a in ["allow", "deny", "reject", "limit"] %}
+        <option value="{{ a }}" {% if edit_rule.action|lower == a %}selected{% endif %}>{{ a }}</option>
+        {% endfor %}
       </select>
     </label>
     <label>Direction
@@ -94,10 +166,10 @@
       </select>
     </label>
     <label>Port / app
-      <input name="port_or_app" value="{{ edit_rule.to }}" required />
+      <input name="port_or_app" value="{{ edit_rule.to|replace(' (v6)', '') }}" required list="app-profiles" />
     </label>
     <label>From
-      <input name="from_address" value="{{ edit_rule.from_ }}" />
+      <input name="from_address" value="{{ edit_rule.from_|replace(' (v6)', '') }}" />
     </label>
     <label>Comment
       <input name="comment" value="{{ edit_rule.comment }}" placeholder="SSH management" />
@@ -115,34 +187,47 @@
   <form method="post" action="/actions/add" class="grid">
     <label>Action
       <select name="action">
-        <option value="allow">allow</option>
-        <option value="deny">deny</option>
+        {% for a in ["allow", "deny", "reject", "limit"] %}
+        <option value="{{ a }}" {% if prefill.action == a %}selected{% endif %}>{{ a }}</option>
+        {% endfor %}
       </select>
     </label>
     <label>Direction
       <select name="direction">
-        <option value="in">in</option>
-        <option value="out">out</option>
+        <option value="in" {% if prefill.direction == 'in' %}selected{% endif %}>in</option>
+        <option value="out" {% if prefill.direction == 'out' %}selected{% endif %}>out</option>
       </select>
     </label>
     <label>Port / app
-      <input name="port_or_app" placeholder="22/tcp" required />
+      <input name="port_or_app" value="{{ prefill.port_or_app }}" placeholder="22/tcp" required list="app-profiles" />
     </label>
     <label>From
-      <input name="from_address" value="Anywhere" />
+      <input name="from_address" value="{{ prefill.from_address or 'Anywhere' }}" />
     </label>
     <label>Comment
-      <input name="comment" placeholder="SSH management" />
+      <input name="comment" value="{{ prefill.comment }}" placeholder="SSH management" />
+    </label>
+    <label>Insert at #
+      <input name="insert_at" type="number" min="1" placeholder="end" />
     </label>
     <button type="submit">Apply (starts {{ confirm_seconds }}s confirm)</button>
   </form>
+  {% if apps %}
+  <p class="muted tiny">App profiles: {{ apps|join(", ") }}</p>
+  {% endif %}
   {% endif %}
 </section>
 {% endif %}
 
+<datalist id="app-profiles">
+  {% for a in apps %}
+  <option value="{{ a }}"></option>
+  {% endfor %}
+</datalist>
+
 <section class="card" id="traffic-logs">
-  <div class="row" style="justify-content: space-between; align-items: baseline;">
-    <h2 style="margin:0">Traffic hits</h2>
+  <div class="section-head">
+    <h2>Traffic hits</h2>
     <a class="ghost-link" href="/#traffic-logs">Refresh</a>
   </div>
   <p class="muted">
@@ -153,6 +238,7 @@
     No log files readable yet — ensure UFW logging is on and <code>/var/log</code> is mounted.
     {% endif %}
   </p>
+  <div class="table-wrap">
   <table>
     <thead>
       <tr>
@@ -160,22 +246,119 @@
         <th>Action</th>
         <th>Flow</th>
         <th>Likely rule</th>
+        <th></th>
       </tr>
     </thead>
     <tbody>
       {% for h in log_rows %}
       <tr>
         <td class="muted">{{ h.timestamp }}</td>
-        <td>{{ h.action }}</td>
+        <td><span class="badge action-{{ h.action|lower }}">{{ h.action }}</span></td>
         <td><code>{{ h.summary }}</code></td>
         <td>{{ h.rule_hint if h.rule_hint else "—" }}</td>
+        <td>
+          {% if h.src and not pending %}
+          <a class="ghost-link"
+             href="/?action=deny&amp;from_address={{ h.src|urlencode }}&amp;port_or_app=Anywhere&amp;comment={{ ('block ' ~ h.src)|urlencode }}#add">
+            Block IP
+          </a>
+          {% endif %}
+        </td>
       </tr>
       {% else %}
-      <tr><td colspan="4" class="muted">No recent UFW hits in the log files.</td></tr>
+      <tr><td colspan="5" class="muted">No recent UFW hits in the log files.</td></tr>
       {% endfor %}
     </tbody>
   </table>
+  </div>
 </section>
-<meta http-equiv="refresh" content="30">
 
+<section class="card" id="listening">
+  <div class="section-head">
+    <h2>Listening ports</h2>
+    <span class="muted">via ss</span>
+  </div>
+  <div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>Proto</th>
+        <th>Port</th>
+        <th>Local</th>
+        <th>Family</th>
+        <th>Process</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for p in ports %}
+      <tr>
+        <td>{{ p.proto }}</td>
+        <td><code>{{ p.port }}</code></td>
+        <td><code>{{ p.local }}</code></td>
+        <td><span class="badge family-{{ p.family }}">{{ p.family }}</span></td>
+        <td>{{ p.process or "—" }}</td>
+        <td>
+          {% if not pending and p.port.isdigit() %}
+          <a class="ghost-link"
+             href="/?action=allow&amp;port_or_app={{ (p.port ~ '/' ~ p.proto)|urlencode }}&amp;comment={{ ((p.process or 'listen') ~ ' ' ~ p.port)|urlencode }}">
+            Allow
+          </a>
+          {% endif %}
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6" class="muted">No listening sockets found (is <code>ss</code> installed in the container?).</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section class="card two-col">
+  <div>
+    <div class="section-head">
+      <h2>Backup</h2>
+      <a class="ghost-link" href="/export">Download export</a>
+    </div>
+    <p class="muted">Snapshots under data/snapshots from prior mutations. Restoring starts a confirm window.</p>
+    {% if not pending %}
+    <form method="post" action="/actions/restore" class="inline-form"
+          onsubmit="return confirm('Restore this snapshot? Starts confirm window.');">
+      <select name="snapshot_name" required>
+        <option value="">Select snapshot…</option>
+        {% for s in snapshots %}
+        <option value="{{ s.name }}">{{ s.name }}</option>
+        {% endfor %}
+      </select>
+      <button type="submit" class="ghost">Restore</button>
+    </form>
+    {% else %}
+    <p class="muted tiny">Confirm or roll back before restoring.</p>
+    {% endif %}
+  </div>
+  <div>
+    <div class="section-head"><h2>Change history</h2></div>
+    <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>When</th><th>Outcome</th><th>Change</th></tr>
+      </thead>
+      <tbody>
+        {% for e in history %}
+        <tr>
+          <td class="muted">{{ e.iso }}</td>
+          <td><span class="badge {% if e.outcome == 'confirmed' %}ok{% else %}bad{% endif %}">{{ e.outcome }}</span></td>
+          <td>{{ e.description }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="3" class="muted">No confirmed or rolled-back changes yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+  </div>
+</section>
+
+<meta http-equiv="refresh" content="45">
 {% endblock %}

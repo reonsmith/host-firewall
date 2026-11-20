@@ -1,4 +1,3 @@
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -7,13 +6,7 @@ from fastapi.testclient import TestClient
 from backend.app import create_app
 from backend.config import Settings
 from backend.ufw_runner import UfwRunner
-
-STATUS = """Status: active
-
-     To                         Action      From
-     --                         ------      ----
-[ 1] 22/tcp                     ALLOW IN    Anywhere                   # SSH
-"""
+from tests.conftest import make_ss_fake, make_ufw_fake
 
 
 @pytest.fixture
@@ -34,18 +27,12 @@ def client(tmp_path: Path):
         log_paths=(tmp_path / "missing.log",),
         log_limit=50,
     )
-
-    def fake_run(args, **kwargs):
-        if args[1:3] == ["status", "numbered"]:
-            out = STATUS
-        else:
-            out = "ok\n"
-        return subprocess.CompletedProcess(args, 0, stdout=out, stderr="")
-
+    fake_run, _ = make_ufw_fake()
     app = create_app(
         settings=settings,
         runner=UfwRunner(runner=fake_run),
         start_watchdog=False,
+        listening_runner=make_ss_fake(),
     )
     return TestClient(app)
 
@@ -61,3 +48,7 @@ def test_login_and_dashboard_shows_comment(client: TestClient):
     assert page.status_code == 200
     assert "SSH" in page.text
     assert "Add rule" in page.text
+    assert "Active" in page.text
+    assert "Listening ports" in page.text
+    assert "ipv6" in page.text
+    assert "Change history" in page.text

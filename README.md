@@ -2,9 +2,14 @@
 
 A small web panel for managing **host UFW** on Ubuntu.
 
-- Labeled (commented) allow/deny rules
-- Edit and delete with confirmation
-- Recent UFW / kernel block hits
+- Labeled (commented) allow/deny/reject/limit rules with IPv4/IPv6 badges
+- Reorder rules (move up/down), edit, delete, insert at position
+- UFW enable/disable, default policies, logging level
+- App profile datalist from `ufw app list`
+- Recent UFW / kernel block hits with one-click **Block IP**
+- Listening ports via `ss`, with quick **Allow**
+- Export `/etc/ufw` as `.tar.gz`, restore prior snapshots
+- Change history of confirmed / rolled-back mutations
 - **Confirm-or-rollback**: every mutation snapshots `/etc/ufw`, applies the change, then requires Confirm within 60s (configurable). If you do not confirm — or the panel becomes unreachable — the snapshot is restored and UFW is reloaded.
 
 This is a **host** firewall UI, not a network edge firewall. Put TLS and network access control in front of it (reverse proxy, VPN, or LAN-only bind).
@@ -27,7 +32,7 @@ docker compose up -d --build
 
 Open `http://<host>:8080` (or the port in `.env`).
 
-The compose file uses `network_mode: host` and `NET_ADMIN` / `NET_RAW` so the container can talk to the host’s UFW. Mounts `/etc/ufw`, `/etc/default/ufw`, and read-only `/var/log`.
+The compose file uses `network_mode: host` and `NET_ADMIN` / `NET_RAW` so the container can talk to the host’s UFW. Mounts `/etc/ufw`, `/etc/default/ufw`, and read-only `/var/log`. The image includes `iproute2` (`ss`) for the listening-ports view.
 
 ## Configuration
 
@@ -59,6 +64,16 @@ export HOST_FIREWALL_PASSWORD='dev-password-ok'
 export HOST_FIREWALL_SECRET_KEY="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
 python -m backend
 ```
+
+## API sketch
+
+Authenticated JSON under `/api/*` (session cookie after `POST /api/login`):
+
+- `GET /api/status`, `/api/rules`, `/api/logs`, `/api/ports`, `/api/apps`, `/api/history`, `/api/snapshots`
+- `POST /api/rules`, `PUT/DELETE /api/rules/{n}`, `POST /api/rules/{n}/move`
+- `POST /api/ufw/enable|disable`, `/api/ufw/default`, `/api/ufw/logging`
+- `GET /api/export`, `POST /api/snapshots/restore`
+- `POST /api/pending/confirm|rollback`
 
 ## Safety
 

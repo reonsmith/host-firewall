@@ -5,17 +5,21 @@ import hmac
 import logging
 import secrets
 import threading
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Request, Response
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response as RawResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from itsdangerous import BadSignature, URLSafeSerializer
 from pydantic import BaseModel, Field
 
 from backend.config import Settings, load_settings
+from backend.export_backup import build_ufw_export_tar, list_snapshots
+from backend.history import ChangeHistory
+from backend.listening import list_listening_ports
 from backend.pending import (
     NoPendingError,
     PendingConflictError,
@@ -24,8 +28,10 @@ from backend.pending import (
 )
 from backend.snapshot import create_snapshot, restore_snapshot
 from backend.ufw_logs import match_rule_hint, read_ufw_hits
-from backend.ufw_parse import parse_ufw_numbered
+from backend.ufw_parse import parse_app_list, parse_ufw_numbered, parse_ufw_status
 from backend.ufw_runner import (
+    DEFAULT_POLICIES,
+    LOGGING_LEVELS,
     AddRuleRequest,
     UfwRunner,
     delete_might_cut_access,
@@ -39,11 +45,29 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
 
 class AddRuleBody(BaseModel):
-    action: str = Field(pattern="^(allow|deny)$")
+    action: str = Field(pattern="^(allow|deny|reject|limit)$")
     port_or_app: str = Field(min_length=1, max_length=64)
     from_address: str = "Anywhere"
     comment: str = ""
     direction: str = Field(default="in", pattern="^(in|out)$")
+    insert_at: int | None = None
+
+
+class MoveRuleBody(BaseModel):
+    to_number: int = Field(ge=1)
+
+
+class DefaultPolicyBody(BaseModel):
+    direction: str = Field(pattern="^(incoming|outgoing|routed)$")
+    policy: str = Field(pattern="^(allow|deny|reject)$")
+
+
+class LoggingBody(BaseModel):
+    level: str
+
+
+class RestoreBody(BaseModel):
+    snapshot_name: str = Field(min_length=1, max_length=128)
 
 
 def _password_ok(provided: str, expected: str) -> bool:
@@ -58,10 +82,12 @@ def create_app(
     runner: UfwRunner | None = None,
     *,
     start_watchdog: bool = True,
+    listening_runner=None,
 ) -> FastAPI:
     settings = settings or load_settings()
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     pending = PendingStore(settings.data_dir, ttl_seconds=settings.confirm_seconds)
+    history = ChangeHistory(settings.data_dir)
     ufw = runner or UfwRunner(settings.ufw_bin)
     signer = URLSafeSerializer(settings.secret_key, salt="host-firewall-session")
     cookie_name = "hf_session"
@@ -70,7 +96,11 @@ def create_app(
     def restore_pending_change(change) -> None:
         """Restore snapshot + reload, then clear pending only on success."""
         restore_snapshot(Path(change.snapshot_path), settings.ufw_dir)
-        ufw.reload()
+        try:
+            ufw.reload()
+        except Exception:
+            # reload may fail if UFW was disabled in snapshot
+            log.exception("ufw reload after restore failed")
         pending.clear_if_snapshot(change.snapshot_path)
 
     def maybe_auto_rollback() -> None:
@@ -79,12 +109,47 @@ def create_app(
             return
         try:
             restore_pending_change(change)
+            history.append(
+                description=change.description,
+                client_ip=change.client_ip,
+                outcome="rolled_back",
+                snapshot_path=change.snapshot_path,
+            )
         except Exception:
             log.exception("auto-rollback failed; pending kept for retry")
 
     def watchdog_loop() -> None:
         while not stop_watchdog.wait(1.0):
             maybe_auto_rollback()
+
+    def begin_mutation(
+        *,
+        description: str,
+        client_ip: str,
+        warn: bool = False,
+    ):
+        snap = create_snapshot(settings.ufw_dir, settings.data_dir)
+        try:
+            change = pending.start(
+                snapshot_path=snap,
+                description=description,
+                client_ip=client_ip,
+                warn_blocks_client=warn,
+            )
+        except PendingConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return change
+
+    def run_mut(change, fn):
+        try:
+            fn()
+        except Exception as exc:
+            try:
+                restore_pending_change(change)
+            except Exception:
+                log.exception("failed to restore after mutation error")
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        return {"pending": change.to_dict(), "warn_blocks_client": change.warn_blocks_client}
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -97,10 +162,11 @@ def create_app(
         if thread is not None:
             thread.join(timeout=2)
 
-    app = FastAPI(title="Host Firewall", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="Host Firewall", version="0.2.0", lifespan=lifespan)
     app.state.settings = settings
     app.state.pending = pending
     app.state.ufw = ufw
+    app.state.history = history
 
     static_dir = BASE_DIR / "static"
     if static_dir.is_dir():
@@ -140,9 +206,62 @@ def create_app(
             return request.client.host
         return "unknown"
 
+    def dashboard_context(
+        request: Request,
+        *,
+        edit_rule=None,
+        prefill: dict | None = None,
+    ) -> dict:
+        maybe_auto_rollback()
+        numbered = ufw.status_numbered()
+        rules = parse_ufw_numbered(numbered)
+        try:
+            verbose = ufw.status_verbose()
+            status = parse_ufw_status(verbose)
+        except Exception:
+            status = parse_ufw_status(numbered)
+            verbose = numbered
+        try:
+            apps = parse_app_list(ufw.app_list())
+        except Exception:
+            apps = []
+        change = pending.get()
+        hits = read_ufw_hits(list(settings.log_paths), limit=settings.log_limit)
+        log_rows = [
+            {
+                "timestamp": h.timestamp,
+                "action": h.action,
+                "summary": h.summary,
+                "src": h.src,
+                "dpt": h.dpt,
+                "proto": h.proto,
+                "rule_hint": match_rule_hint(h, rules),
+            }
+            for h in hits
+        ]
+        ports = list_listening_ports(runner=listening_runner)
+        return {
+            "label": settings.hostname_label,
+            "rules": rules,
+            "status": status,
+            "pending": change,
+            "confirm_seconds": settings.confirm_seconds,
+            "log_rows": log_rows,
+            "log_sources": [str(p) for p in settings.log_paths if p.is_file()],
+            "edit_rule": edit_rule,
+            "apps": apps,
+            "ports": ports,
+            "history": [e.to_dict() for e in history.recent(40)],
+            "snapshots": list_snapshots(settings.data_dir)[:20],
+            "logging_levels": LOGGING_LEVELS,
+            "default_policies": DEFAULT_POLICIES,
+            "prefill": prefill or {},
+            "request": request,
+        }
+
     @app.get("/api/health")
     def health() -> dict:
-        return {"ok": True, "label": settings.hostname_label}
+        return {"ok": True, "label": settings.hostname_label, "version": "0.2.0"}
 
     @app.post("/api/login")
     def api_login(response: Response, password: str = Form()) -> dict:
@@ -156,6 +275,20 @@ def create_app(
         response.delete_cookie(cookie_name)
         return {"ok": True}
 
+    @app.get("/api/status")
+    def api_status(auth: bool = Depends(require_auth)) -> dict:
+        maybe_auto_rollback()
+        verbose = ufw.status_verbose()
+        status = parse_ufw_status(verbose)
+        return {
+            "active": status.active,
+            "logging": status.logging,
+            "default_incoming": status.default_incoming,
+            "default_outgoing": status.default_outgoing,
+            "default_routed": status.default_routed,
+            "raw": status.raw,
+        }
+
     @app.get("/api/rules")
     def api_rules(auth: bool = Depends(require_auth)) -> dict:
         maybe_auto_rollback()
@@ -168,10 +301,35 @@ def create_app(
                 "direction": r.direction,
                 "from": r.from_,
                 "comment": r.comment,
+                "family": r.family,
             }
             for r in parse_ufw_numbered(text)
         ]
         return {"rules": rules, "raw": text}
+
+    @app.get("/api/apps")
+    def api_apps(auth: bool = Depends(require_auth)) -> dict:
+        return {"apps": parse_app_list(ufw.app_list())}
+
+    @app.get("/api/ports")
+    def api_ports(auth: bool = Depends(require_auth)) -> dict:
+        ports = list_listening_ports(runner=listening_runner)
+        return {
+            "ports": [
+                {
+                    "proto": p.proto,
+                    "local": p.local,
+                    "port": p.port,
+                    "process": p.process,
+                    "family": p.family,
+                }
+                for p in ports
+            ]
+        }
+
+    @app.get("/api/history")
+    def api_history(auth: bool = Depends(require_auth)) -> dict:
+        return {"history": [e.to_dict() for e in history.recent(100)]}
 
     @app.get("/api/pending")
     def api_pending(auth: bool = Depends(require_auth)) -> dict:
@@ -192,36 +350,23 @@ def create_app(
         warn = rule_would_block_client(
             action=body.action, from_address=body.from_address, client_ip=ip
         )
-        snap = create_snapshot(settings.ufw_dir, settings.data_dir)
         desc = f"{body.action} {body.port_or_app} from {body.from_address}"
         if body.comment:
             desc += f" # {body.comment}"
-        try:
-            change = pending.start(
-                snapshot_path=snap,
-                description=desc,
-                client_ip=ip,
-                warn_blocks_client=warn,
-            )
-        except PendingConflictError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        try:
-            ufw.add_rule(
+        change = begin_mutation(description=desc, client_ip=ip, warn=warn)
+        return run_mut(
+            change,
+            lambda: ufw.add_rule(
                 AddRuleRequest(
                     action=body.action,
                     port_or_app=body.port_or_app,
                     from_address=body.from_address,
                     comment=body.comment,
                     direction=body.direction,
+                    insert_at=body.insert_at,
                 )
-            )
-        except Exception as exc:
-            try:
-                restore_pending_change(change)
-            except Exception:
-                log.exception("failed to restore after add error")
-            raise HTTPException(status_code=500, detail=str(exc)) from exc
-        return {"pending": change.to_dict(), "warn_blocks_client": warn}
+            ),
+        )
 
     @app.delete("/api/rules/{number}")
     def api_delete_rule(
@@ -241,28 +386,11 @@ def create_app(
                 from_=target.from_,
                 client_ip=ip,
             )
-        snap = create_snapshot(settings.ufw_dir, settings.data_dir)
         desc = f"delete rule {number}"
         if target and target.comment:
             desc += f" # {target.comment}"
-        try:
-            change = pending.start(
-                snapshot_path=snap,
-                description=desc,
-                client_ip=ip,
-                warn_blocks_client=warn,
-            )
-        except PendingConflictError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        try:
-            ufw.delete_rule(number)
-        except Exception as exc:
-            try:
-                restore_pending_change(change)
-            except Exception:
-                log.exception("failed to restore after delete error")
-            raise HTTPException(status_code=500, detail=str(exc)) from exc
-        return {"pending": change.to_dict(), "warn_blocks_client": warn}
+        change = begin_mutation(description=desc, client_ip=ip, warn=warn)
+        return run_mut(change, lambda: ufw.delete_rule(number))
 
     @app.put("/api/rules/{number}")
     def api_edit_rule(
@@ -285,22 +413,14 @@ def create_app(
             from_=target.from_,
             client_ip=ip,
         )
-        snap = create_snapshot(settings.ufw_dir, settings.data_dir)
         desc = (
             f"edit #{number} → {body.action} {body.port_or_app} from {body.from_address}"
         )
         if body.comment:
             desc += f" # {body.comment}"
-        try:
-            change = pending.start(
-                snapshot_path=snap,
-                description=desc,
-                client_ip=ip,
-                warn_blocks_client=warn,
-            )
-        except PendingConflictError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        try:
+        change = begin_mutation(description=desc, client_ip=ip, warn=warn)
+
+        def do_edit():
             ufw.delete_rule(number)
             ufw.add_rule(
                 AddRuleRequest(
@@ -312,13 +432,80 @@ def create_app(
                     insert_at=number,
                 )
             )
-        except Exception as exc:
-            try:
-                restore_pending_change(change)
-            except Exception:
-                log.exception("failed to restore after edit error")
-            raise HTTPException(status_code=500, detail=str(exc)) from exc
-        return {"pending": change.to_dict(), "warn_blocks_client": warn}
+
+        return run_mut(change, do_edit)
+
+    @app.post("/api/rules/{number}/move")
+    def api_move_rule(
+        number: int,
+        body: MoveRuleBody,
+        request: Request,
+        auth: bool = Depends(require_auth),
+    ) -> dict:
+        maybe_auto_rollback()
+        ip = client_ip(request)
+        if number == body.to_number:
+            raise HTTPException(status_code=400, detail="Already at that position")
+        change = begin_mutation(
+            description=f"move rule {number} → {body.to_number}",
+            client_ip=ip,
+            warn=False,
+        )
+        return run_mut(change, lambda: ufw.move_rule(number, body.to_number))
+
+    @app.post("/api/ufw/enable")
+    def api_enable(request: Request, auth: bool = Depends(require_auth)) -> dict:
+        maybe_auto_rollback()
+        ip = client_ip(request)
+        change = begin_mutation(description="enable UFW", client_ip=ip, warn=False)
+        return run_mut(change, ufw.enable)
+
+    @app.post("/api/ufw/disable")
+    def api_disable(request: Request, auth: bool = Depends(require_auth)) -> dict:
+        maybe_auto_rollback()
+        ip = client_ip(request)
+        change = begin_mutation(
+            description="disable UFW",
+            client_ip=ip,
+            warn=True,
+        )
+        return run_mut(change, ufw.disable)
+
+    @app.post("/api/ufw/default")
+    def api_default(
+        body: DefaultPolicyBody,
+        request: Request,
+        auth: bool = Depends(require_auth),
+    ) -> dict:
+        maybe_auto_rollback()
+        ip = client_ip(request)
+        warn = body.direction == "incoming" and body.policy in {"deny", "reject"}
+        change = begin_mutation(
+            description=f"default {body.policy} {body.direction}",
+            client_ip=ip,
+            warn=warn,
+        )
+        return run_mut(
+            change, lambda: ufw.set_default(body.direction, body.policy)
+        )
+
+    @app.post("/api/ufw/logging")
+    def api_logging(
+        body: LoggingBody,
+        request: Request,
+        auth: bool = Depends(require_auth),
+    ) -> dict:
+        maybe_auto_rollback()
+        level = body.level.lower()
+        if level not in LOGGING_LEVELS:
+            raise HTTPException(status_code=400, detail="Invalid logging level")
+        ip = client_ip(request)
+        change = begin_mutation(
+            description=f"logging {level}",
+            client_ip=ip,
+            warn=False,
+        )
+        return run_mut(change, lambda: ufw.set_logging(level))
 
     @app.get("/api/logs")
     def api_logs(auth: bool = Depends(require_auth)) -> dict:
@@ -344,14 +531,66 @@ def create_app(
             "sources": [str(p) for p in settings.log_paths if p.is_file()],
         }
 
+    @app.get("/api/export")
+    def api_export(auth: bool = Depends(require_auth)) -> RawResponse:
+        maybe_auto_rollback()
+        payload = build_ufw_export_tar(
+            settings.ufw_dir,
+            status_numbered=ufw.status_numbered(),
+            status_verbose=ufw.status_verbose(),
+        )
+        filename = f"host-firewall-ufw-{int(time.time())}.tar.gz"
+        return RawResponse(
+            content=payload,
+            media_type="application/gzip",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    @app.get("/api/snapshots")
+    def api_snapshots(auth: bool = Depends(require_auth)) -> dict:
+        return {"snapshots": list_snapshots(settings.data_dir)}
+
+    @app.post("/api/snapshots/restore")
+    def api_restore(
+        body: RestoreBody,
+        request: Request,
+        auth: bool = Depends(require_auth),
+    ) -> dict:
+        maybe_auto_rollback()
+        name = Path(body.snapshot_name).name
+        if not name.startswith("ufw-"):
+            raise HTTPException(status_code=400, detail="Invalid snapshot name")
+        snap_path = settings.data_dir / "snapshots" / name
+        if not snap_path.is_dir():
+            raise HTTPException(status_code=404, detail="Snapshot not found")
+        ip = client_ip(request)
+        # Snapshot current state first so confirm-window can undo the restore
+        change = begin_mutation(
+            description=f"restore snapshot {name}",
+            client_ip=ip,
+            warn=True,
+        )
+
+        def do_restore():
+            restore_snapshot(snap_path, settings.ufw_dir)
+            ufw.reload()
+
+        return run_mut(change, do_restore)
+
     @app.post("/api/pending/confirm")
-    def api_confirm(auth: bool = Depends(require_auth)) -> dict:
+    def api_confirm(request: Request, auth: bool = Depends(require_auth)) -> dict:
         try:
             change = pending.confirm()
         except NoPendingError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except PendingExpiredError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        history.append(
+            description=change.description,
+            client_ip=change.client_ip,
+            outcome="confirmed",
+            snapshot_path=change.snapshot_path,
+        )
         return {"ok": True, "confirmed": change.to_dict()}
 
     @app.post("/api/pending/rollback")
@@ -364,6 +603,12 @@ def create_app(
             restore_pending_change(change)
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Rollback failed: {exc}") from exc
+        history.append(
+            description=change.description,
+            client_ip=change.client_ip,
+            outcome="rolled_back",
+            snapshot_path=change.snapshot_path,
+        )
         return {"ok": True, "rolled_back": change.to_dict()}
 
     # ---- HTML ----
@@ -397,36 +642,17 @@ def create_app(
     def dashboard(request: Request) -> Response:
         if not _authed(request):
             return RedirectResponse("/login", status_code=303)
-        maybe_auto_rollback()
-        text = ufw.status_numbered()
-        rules = parse_ufw_numbered(text)
-        change = pending.get()
-        hits = read_ufw_hits(list(settings.log_paths), limit=settings.log_limit)
-        log_rows = [
-            {
-                "timestamp": h.timestamp,
-                "action": h.action,
-                "summary": h.summary,
-                "src": h.src,
-                "dpt": h.dpt,
-                "proto": h.proto,
-                "rule_hint": match_rule_hint(h, rules),
-            }
-            for h in hits
-        ]
-        log_sources = [str(p) for p in settings.log_paths if p.is_file()]
+        prefill = {
+            "action": request.query_params.get("action") or "allow",
+            "port_or_app": request.query_params.get("port_or_app") or "",
+            "from_address": request.query_params.get("from_address") or "Anywhere",
+            "comment": request.query_params.get("comment") or "",
+            "direction": request.query_params.get("direction") or "in",
+        }
         return templates.TemplateResponse(
             request,
             "dashboard.html",
-            {
-                "label": settings.hostname_label,
-                "rules": rules,
-                "pending": change,
-                "confirm_seconds": settings.confirm_seconds,
-                "log_rows": log_rows,
-                "log_sources": log_sources,
-                "edit_rule": None,
-            },
+            dashboard_context(request, prefill=prefill),
         )
 
     @app.get("/edit/{number}", response_class=HTMLResponse)
@@ -443,15 +669,7 @@ def create_app(
         return templates.TemplateResponse(
             request,
             "dashboard.html",
-            {
-                "label": settings.hostname_label,
-                "rules": rules,
-                "pending": None,
-                "confirm_seconds": settings.confirm_seconds,
-                "log_rows": [],
-                "log_sources": [],
-                "edit_rule": target,
-            },
+            dashboard_context(request, edit_rule=target),
         )
 
     @app.post("/actions/add", response_class=HTMLResponse)
@@ -459,12 +677,15 @@ def create_app(
         if not _authed(request):
             return RedirectResponse("/login", status_code=303)
         form = await request.form()
+        insert_raw = str(form.get("insert_at") or "").strip()
+        insert_at = int(insert_raw) if insert_raw.isdigit() else None
         body = AddRuleBody(
             action=str(form.get("action") or "allow"),
             port_or_app=str(form.get("port_or_app") or ""),
             from_address=str(form.get("from_address") or "Anywhere"),
             comment=str(form.get("comment") or ""),
             direction=str(form.get("direction") or "in"),
+            insert_at=insert_at,
         )
         api_add_rule(body, request, True)
         return RedirectResponse("/", status_code=303)
@@ -491,11 +712,75 @@ def create_app(
         api_edit_rule(number, body, request, True)
         return RedirectResponse("/", status_code=303)
 
+    @app.post("/actions/move/{number}", response_class=HTMLResponse)
+    async def html_move(number: int, request: Request) -> Response:
+        if not _authed(request):
+            return RedirectResponse("/login", status_code=303)
+        form = await request.form()
+        to_number = int(str(form.get("to_number") or "0"))
+        api_move_rule(number, MoveRuleBody(to_number=to_number), request, True)
+        return RedirectResponse("/", status_code=303)
+
+    @app.post("/actions/enable", response_class=HTMLResponse)
+    def html_enable(request: Request) -> Response:
+        if not _authed(request):
+            return RedirectResponse("/login", status_code=303)
+        api_enable(request, True)
+        return RedirectResponse("/", status_code=303)
+
+    @app.post("/actions/disable", response_class=HTMLResponse)
+    def html_disable(request: Request) -> Response:
+        if not _authed(request):
+            return RedirectResponse("/login", status_code=303)
+        api_disable(request, True)
+        return RedirectResponse("/", status_code=303)
+
+    @app.post("/actions/default", response_class=HTMLResponse)
+    async def html_default(request: Request) -> Response:
+        if not _authed(request):
+            return RedirectResponse("/login", status_code=303)
+        form = await request.form()
+        api_default(
+            DefaultPolicyBody(
+                direction=str(form.get("direction") or "incoming"),
+                policy=str(form.get("policy") or "deny"),
+            ),
+            request,
+            True,
+        )
+        return RedirectResponse("/", status_code=303)
+
+    @app.post("/actions/logging", response_class=HTMLResponse)
+    async def html_logging(request: Request) -> Response:
+        if not _authed(request):
+            return RedirectResponse("/login", status_code=303)
+        form = await request.form()
+        api_logging(LoggingBody(level=str(form.get("level") or "low")), request, True)
+        return RedirectResponse("/", status_code=303)
+
+    @app.post("/actions/restore", response_class=HTMLResponse)
+    async def html_restore(request: Request) -> Response:
+        if not _authed(request):
+            return RedirectResponse("/login", status_code=303)
+        form = await request.form()
+        api_restore(
+            RestoreBody(snapshot_name=str(form.get("snapshot_name") or "")),
+            request,
+            True,
+        )
+        return RedirectResponse("/", status_code=303)
+
+    @app.get("/export")
+    def html_export(request: Request) -> Response:
+        if not _authed(request):
+            return RedirectResponse("/login", status_code=303)
+        return api_export(True)
+
     @app.post("/actions/confirm", response_class=HTMLResponse)
     def html_confirm(request: Request) -> Response:
         if not _authed(request):
             return RedirectResponse("/login", status_code=303)
-        api_confirm(True)
+        api_confirm(request, True)
         return RedirectResponse("/", status_code=303)
 
     @app.post("/actions/rollback", response_class=HTMLResponse)

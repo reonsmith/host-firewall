@@ -1,4 +1,3 @@
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -7,6 +6,7 @@ from fastapi.testclient import TestClient
 from backend.app import create_app
 from backend.config import Settings
 from backend.ufw_runner import UfwRunner
+from tests.conftest import make_ss_fake, make_ufw_fake
 
 STATUS = """Status: active
 
@@ -42,20 +42,12 @@ def env(tmp_path: Path):
         log_paths=(log,),
         log_limit=50,
     )
-    calls: list[list[str]] = []
-
-    def fake_run(args, **kwargs):
-        calls.append(list(args))
-        if args[1:3] == ["status", "numbered"]:
-            out = STATUS
-        else:
-            out = "ok\n"
-        return subprocess.CompletedProcess(args, 0, stdout=out, stderr="")
-
+    fake_run, calls = make_ufw_fake(numbered=STATUS)
     app = create_app(
         settings=settings,
         runner=UfwRunner(runner=fake_run),
         start_watchdog=False,
+        listening_runner=make_ss_fake(),
     )
     return TestClient(app), calls
 

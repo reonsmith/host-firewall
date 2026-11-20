@@ -31,3 +31,4 @@ def test_rule_would_block_client_heuristic():
     assert rule_would_block_client(action="deny", from_address="Anywhere", client_ip="1.2.3.4")
     assert not rule_would_block_client(action="allow", from_address="Anywhere", client_ip="1.2.3.4")
     assert rule_would_block_client(action="deny", from_address="1.2.3.4", client_ip="1.2.3.4")
+    assert rule_would_block_client(action="reject", from_address="Anywhere", client_ip="1.2.3.4")
