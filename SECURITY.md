@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-The `main` branch is the supported line. There are no long-term release trains yet.
+The latest release is supported. Fixes land on `main` and ship in the next tagged release.
 
 ## Reporting a vulnerability
 

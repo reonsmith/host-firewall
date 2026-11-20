@@ -12,3 +12,7 @@ tests
 .DS_Store
 LICENSE
 SECURITY.md
+docs
+CHANGELOG.md
+CONTRIBUTING.md
+docker-compose*.yml
