@@ -184,6 +184,9 @@
   </section>
 </div>
 
+<div class="desk">
+<div class="desk-main">
+
 <section class="panel" id="rules" data-live="rules">
   <div class="panel-head">
     <h2>Rules</h2>
@@ -253,6 +256,71 @@
     {% endfor %}
   </div>
 </section>
+
+<section class="panel" id="traffic-logs" data-live="traffic">
+  <div class="panel-head">
+    <h2>Traffic hits</h2>
+    <span class="count">{{ log_rows|length }} most recent</span>
+  </div>
+  {% if log_rows %}
+  <div class="table-wrap is-tall" tabindex="0" aria-label="Recent traffic hits">
+  <table>
+    <thead>
+      <tr>
+        <th scope="col">When</th>
+        <th scope="col">Action</th>
+        <th scope="col">Flow</th>
+        <th scope="col">Likely rule</th>
+        <th scope="col"><span class="sr-only">Actions</span></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for h in log_rows %}
+      {% set t = h.timestamp %}
+      <tr>
+        <td class="when" title="{{ t }}">{{ t[5:10] ~ " " ~ t[11:19] if (t[:4].isdigit() and t|length >= 19) else t }}</td>
+        <td><span class="badge action-{{ h.action|lower }}">{{ h.action|lower }}</span></td>
+        <td><code>{{ h.summary[h.action|length + 1:] if h.summary.startswith(h.action ~ " ") else h.summary }}</code></td>
+        <td>{{ h.rule_hint if h.rule_hint else "—" }}</td>
+        <td class="nowrap">
+          {% if h.src and not pending %}
+          <a class="ghost-link accent"
+             href="/?action=deny&amp;from_address={{ h.src|urlencode }}&amp;port_or_app=Anywhere&amp;comment={{ ('block ' ~ h.src)|urlencode }}#add">
+            Block IP
+          </a>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% elif status.logging == "off" %}
+  <div class="empty">
+    <strong>Logging is off</strong>
+    UFW isn't writing anything to the log, so there are no hits to show.
+    {% if not pending %}
+    <form method="post" action="/actions/logging">
+      <input type="hidden" name="level" value="low" />
+      <button type="submit" class="ghost">Set logging to low</button>
+    </form>
+    {% endif %}
+  </div>
+  {% elif not log_sources %}
+  <div class="empty">
+    <strong>No readable log files</strong>
+    The container can't see /var/log/ufw.log, kern.log or syslog. Mount /var/log read-only into the container.
+  </div>
+  {% else %}
+  <div class="empty">
+    <strong>No hits yet</strong>
+    Nothing blocked or allowed has been logged recently. At logging level {{ status.logging }}, blocks show up here as they happen.
+  </div>
+  {% endif %}
+</section>
+</div>
+
+<div class="desk-side">
 
 {% if edit_rule %}
 <section class="panel" id="add">
@@ -334,67 +402,6 @@
   {% endfor %}
 </datalist>
 
-<section class="panel" id="traffic-logs" data-live="traffic">
-  <div class="panel-head">
-    <h2>Traffic hits</h2>
-    <span class="count">{{ log_rows|length }} most recent</span>
-  </div>
-  {% if log_rows %}
-  <div class="table-wrap is-tall" tabindex="0" aria-label="Recent traffic hits">
-  <table>
-    <thead>
-      <tr>
-        <th scope="col">When</th>
-        <th scope="col">Action</th>
-        <th scope="col">Flow</th>
-        <th scope="col">Likely rule</th>
-        <th scope="col"><span class="sr-only">Actions</span></th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for h in log_rows %}
-      {% set t = h.timestamp %}
-      <tr>
-        <td class="when" title="{{ t }}">{{ t[5:10] ~ " " ~ t[11:19] if (t[:4].isdigit() and t|length >= 19) else t }}</td>
-        <td><span class="badge action-{{ h.action|lower }}">{{ h.action|lower }}</span></td>
-        <td><code>{{ h.summary[h.action|length + 1:] if h.summary.startswith(h.action ~ " ") else h.summary }}</code></td>
-        <td>{{ h.rule_hint if h.rule_hint else "—" }}</td>
-        <td class="nowrap">
-          {% if h.src and not pending %}
-          <a class="ghost-link accent"
-             href="/?action=deny&amp;from_address={{ h.src|urlencode }}&amp;port_or_app=Anywhere&amp;comment={{ ('block ' ~ h.src)|urlencode }}#add">
-            Block IP
-          </a>
-          {% endif %}
-        </td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-  </div>
-  {% elif status.logging == "off" %}
-  <div class="empty">
-    <strong>Logging is off</strong>
-    UFW isn't writing anything to the log, so there are no hits to show.
-    {% if not pending %}
-    <form method="post" action="/actions/logging">
-      <input type="hidden" name="level" value="low" />
-      <button type="submit" class="ghost">Set logging to low</button>
-    </form>
-    {% endif %}
-  </div>
-  {% elif not log_sources %}
-  <div class="empty">
-    <strong>No readable log files</strong>
-    The container can't see /var/log/ufw.log, kern.log or syslog. Mount /var/log read-only into the container.
-  </div>
-  {% else %}
-  <div class="empty">
-    <strong>No hits yet</strong>
-    Nothing blocked or allowed has been logged recently. At logging level {{ status.logging }}, blocks show up here as they happen.
-  </div>
-  {% endif %}
-</section>
 
 <section class="panel" id="listening" data-live="listening">
   <div class="panel-head">
@@ -444,7 +451,6 @@
   {% endif %}
 </section>
 
-<div class="two-col">
   <section class="panel" id="backup">
     <div class="panel-head">
       <h2>Backup</h2>
@@ -497,6 +503,7 @@
     <div class="empty"><strong>No changes yet</strong>Confirmed and rolled-back changes are listed here.</div>
     {% endif %}
   </section>
+</div>
 </div>
 
 <noscript><meta http-equiv="refresh" content="45"></noscript>
