@@ -662,6 +662,10 @@ tr.is-uncovered td:first-child { box-shadow: inset 3px 0 0 var(--warn); }
   .bars { min-height: 220px; }
   .hero { margin-bottom: 1.8rem; }
   .table-wrap.is-tall { max-height: 560px; }
+  /* Side column is narrow: the address already shows the family */
+  .desk-side #listening th:nth-child(4),
+  .desk-side #listening td:nth-child(4) { display: none; }
+  .desk-side #listening th, .desk-side #listening td { padding-inline: 0.4rem; }
 }
 
 @media (min-width: 1900px) {
